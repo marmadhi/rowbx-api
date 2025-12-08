@@ -16,7 +16,8 @@ from typing import Optional, Dict, List, Tuple
 from models import (
     Product, ProductDetail, ProductDescriptions, ProductCharacteristics,
     ProductMerchandising, ProductImages, Materialization,
-    Activity, ActivityDetail, ActivityLocation, ActivityCharacteristics, ActivityPricing
+    Activity, ActivityDetail, ActivityLocation, ActivityCharacteristics, ActivityPricing,
+    ActivityDescriptions
 )
 
 # Logger
@@ -217,32 +218,39 @@ class WonderboxScraper:
         return products, total_results, total_pages
     
     def _parse_product_row(self, row) -> Optional[Product]:
-        """Parse une ligne produit"""
+        """Parse une ligne produit - Extraction MAXIMALE"""
         cells = row.find_all('td')
         if len(cells) < 10:
             return None
-        
+
         product = Product()
-        
-        # ID
+
+        # ========== ID ==========
         checkbox = cells[1].find('input', type='checkbox') if len(cells) > 1 else None
         if checkbox:
             match = re.search(r'check(\d+)', checkbox.get('ng-model', ''))
             if match:
                 product.id = int(match.group(1))
-        
-        # Code + Status
+
+        # ========== CODE + STATUS ==========
         if len(cells) > 2:
             code_link = cells[2].find('a', href=re.compile(r'/box/index/id/'))
             if code_link:
                 product.code = code_link.get_text(strip=True)
                 href = code_link.get('href', '')
                 product.detail_url = f"{self.BASE_URL}{href}" if href else ""
+
+                # Extraire l'ID depuis l'URL si pas déjà trouvé
+                if not product.id:
+                    id_match = re.search(r'/id/(\d+)', href)
+                    if id_match:
+                        product.id = int(id_match.group(1))
+
             parts = cells[2].get_text(separator='|', strip=True).split('|')
             if len(parts) > 1:
                 product.status = parts[-1].strip()
-        
-        # Nom
+
+        # ========== NOM + TYPE + RÉFÉRENCE ==========
         if len(cells) > 3:
             name_link = cells[3].find('a', href=re.compile(r'/box/index/id/'))
             if name_link:
@@ -251,34 +259,92 @@ class WonderboxScraper:
             if len(parts) >= 2:
                 product.product_type = parts[1].strip() if len(parts) > 1 else ""
                 product.reference = parts[2].strip() if len(parts) > 2 else ""
-        
-        # Autres
-        product.model = cells[5].get_text(strip=True) if len(cells) > 5 else ""
-        product.publisher = cells[7].get_text(strip=True) if len(cells) > 7 else ""
-        product.validity_duration = cells[8].get_text(strip=True) if len(cells) > 8 else ""
-        product.production_year = cells[9].get_text(strip=True) if len(cells) > 9 else ""
-        
-        # Activités
+
+        # ========== WEB STATUS (cellule 4 souvent) ==========
+        if len(cells) > 4:
+            web_status_text = cells[4].get_text(strip=True)
+            if web_status_text and web_status_text not in ['-', '']:
+                product.web_status = web_status_text
+
+        # ========== MODÈLE ==========
+        if len(cells) > 5:
+            product.model = cells[5].get_text(strip=True)
+
+        # ========== COLLECTION/VERSION (cellule 6 parfois) ==========
+        if len(cells) > 6:
+            coll_text = cells[6].get_text(strip=True)
+            if coll_text and coll_text not in ['-', '']:
+                # Peut contenir collection/version
+                if '/' in coll_text:
+                    parts = coll_text.split('/')
+                    product.collection = parts[0].strip()
+                    product.version = parts[1].strip() if len(parts) > 1 else ""
+                else:
+                    product.collection = coll_text
+
+        # ========== PUBLISHER ==========
+        if len(cells) > 7:
+            product.publisher = cells[7].get_text(strip=True)
+
+        # ========== VALIDITÉ ==========
+        if len(cells) > 8:
+            product.validity_duration = cells[8].get_text(strip=True)
+
+        # ========== ANNÉE PRODUCTION ==========
+        if len(cells) > 9:
+            product.production_year = cells[9].get_text(strip=True)
+
+        # ========== ACTIVITÉS ==========
         if len(cells) > 10:
-            match = re.search(r'(\d+)\s*prestation', cells[10].get_text(strip=True))
+            act_text = cells[10].get_text(strip=True)
+            match = re.search(r'(\d+)\s*prestation', act_text)
             if match:
                 product.activities_count = int(match.group(1))
-        
-        # Prix
-        price_text = cells[-1].get_text(strip=True)
+
+        # ========== PRIX ET PAYS ==========
+        price_text = cells[-1].get_text(strip=True) if cells else ""
         match = re.search(r'([\d\s,\.]+)\s*€', price_text)
         if match:
             try:
                 product.price = float(match.group(1).replace(' ', '').replace(',', '.'))
             except:
                 pass
+
+        # Extraire tous les pays avec prix
+        country_matches = re.findall(r'([\d\s,\.]+)\s*€\s*\(([^)]+)\)', price_text)
+        for price_str, country in country_matches:
+            try:
+                price_val = float(price_str.replace(' ', '').replace(',', '.'))
+                product.prices_by_country[country.strip()] = price_val
+            except:
+                pass
+
+        # Premier pays trouvé
         country_match = re.search(r'\(([^)]+)\)', price_text)
         if country_match:
             product.price_country = country_match.group(1).strip()
-        
+
+        # ========== EAN depuis la ligne (si présent) ==========
+        for cell in cells:
+            cell_text = cell.get_text(strip=True)
+            ean_match = re.search(r'\b(\d{13})\b', cell_text)
+            if ean_match:
+                product.ean_code = ean_match.group(1)
+                break
+
+        # ========== CLASSE DE LIGNE POUR INFOS SUPPLÉMENTAIRES ==========
+        row_classes = row.get('class', [])
+        for cls in row_classes:
+            if cls not in ['bg-light', 'bg-dark']:
+                # Peut indiquer un statut spécial
+                if 'active' in cls.lower():
+                    product.web_status = product.web_status or 'ACTIVE'
+                elif 'archived' in cls.lower():
+                    product.web_status = product.web_status or 'ARCHIVED'
+
         if not product.code and not product.name:
             return None
-        
+
         return product
     
     def get_all_products(self, publisher: str = "FRANCE", web_status: str = "ACTIVE",
@@ -356,107 +422,164 @@ class WonderboxScraper:
         return detail
     
     def _parse_product_presentation(self, html: str, product_id: int) -> Optional[ProductDetail]:
-        """Parse l'onglet Présentation"""
+        """Parse l'onglet Présentation - Extraction MAXIMALE des données"""
         logger.debug("[PARSE] Début parsing Présentation")
         logger.debug(f"[PARSE] Taille HTML: {len(html)} caractères")
         soup = BeautifulSoup(html, 'html.parser')
-        
+
         detail = ProductDetail(id=product_id)
         detail.detail_url = f"{self.BASE_URL}/box/index/id/{product_id}"
-        
+
         # Vérifier qu'on est bien sur une page produit
-        # Chercher des éléments spécifiques à la page produit
         box_form = soup.find('form', id=re.compile(r'box', re.I))
         box_details = soup.find(id=re.compile(r'boxDetails', re.I))
-        
+
         logger.debug(f"[PARSE] box_form trouvé: {box_form is not None}")
         logger.debug(f"[PARSE] box_details trouvé: {box_details is not None}")
-        
-        # Lister tous les formulaires pour debug
-        forms = soup.find_all('form')
-        logger.debug(f"[PARSE] Formulaires trouvés: {[f.get('id', f.get('name', 'unnamed')) for f in forms]}")
-        
-        # Lister tous les h1, h2 pour debug
-        h1s = soup.find_all('h1')
-        h2s = soup.find_all('h2')
-        logger.debug(f"[PARSE] H1 trouvés: {[h.get_text(strip=True)[:50] for h in h1s]}")
-        logger.debug(f"[PARSE] H2 trouvés: {[h.get_text(strip=True)[:50] for h in h2s]}")
-        
+
         # Nom depuis h1
         h1 = soup.find('h1')
         if h1:
             raw_name = h1.get_text(strip=True)
             detail.name = re.sub(r'^[^\w]*', '', raw_name)
             logger.debug(f"[PARSE] Nom (h1): {detail.name}")
-        else:
-            logger.warning("[PARSE] ⚠️ h1 non trouvé")
-        
+
         # Si le nom est le titre du site, on n'est pas sur la bonne page
         if detail.name and "Gestion des prestations" in detail.name:
-            logger.error("[PARSE] ❌ Page produit non chargée - titre du site détecté!")
-            logger.error("[PARSE] ❌ Session probablement expirée ou cookie invalide")
+            logger.error("[PARSE] ❌ Page produit non chargée - session expirée")
             return None
-        
+
+        # ========== CODES ET IDENTIFIANTS ==========
         # Code depuis les liens navigation
         code_match = re.search(r'box_code/([A-Z0-9]+)', html)
         if code_match:
             detail.code = code_match.group(1)
-            logger.debug(f"[PARSE] Code: {detail.code}")
         else:
-            # Fallback: chercher dans les inputs
             code_input = soup.find('input', {'name': re.compile(r'code', re.I)})
             if code_input and code_input.get('value'):
                 detail.code = code_input.get('value')
-                logger.debug(f"[PARSE] Code (input): {detail.code}")
-            else:
-                logger.warning("[PARSE] ⚠️ Code non trouvé dans les liens ni inputs")
-        
+        logger.debug(f"[PARSE] Code: {detail.code}")
+
         # Collection et Version
         collection_match = re.search(r'boxCollection/([A-Z0-9]+)', html)
         if collection_match:
             detail.collection = collection_match.group(1)
-            logger.debug(f"[PARSE] Collection: {detail.collection}")
-        
+
         version_match = re.search(r'boxVersion/([A-Z0-9_]+)', html)
         if version_match:
             detail.version = version_match.group(1)
-            logger.debug(f"[PARSE] Version: {detail.version}")
-        
+
         # Modèle depuis spans .code (format XX99)
         for span in soup.find_all('span', class_='code'):
             text = span.get_text(strip=True)
             if re.match(r'^[A-Z]{2}\d{2}$', text):
                 detail.model = text
-                logger.debug(f"[PARSE] Modèle: {detail.model}")
                 break
-        
-        # Descriptions depuis textareas
-        logger.debug("[PARSE] Recherche des textareas...")
+
+        # ========== STATUTS ==========
+        # Publisher depuis URL ou selects
+        publisher_match = re.search(r'publisher/([A-Z]+)', html)
+        if publisher_match:
+            detail.publisher = publisher_match.group(1)
+
+        # Chercher les selects pour status et web_status
+        for select in soup.find_all('select'):
+            name = select.get('name', select.get('id', ''))
+            selected = select.find('option', selected=True)
+            if selected:
+                val = selected.get_text(strip=True)
+                if val and val not in ['--', '']:
+                    if 'status' in name.lower() and 'web' not in name.lower():
+                        detail.status = val
+                        logger.debug(f"[PARSE] Status: {val}")
+                    elif 'webStatus' in name or 'web_status' in name.lower():
+                        detail.web_status = val
+                        logger.debug(f"[PARSE] Web Status: {val}")
+                    elif 'publisher' in name.lower():
+                        detail.publisher = val
+                        logger.debug(f"[PARSE] Publisher: {val}")
+
+        # ========== PRIX ==========
+        # Chercher le prix dans les inputs ou textes
+        price_inputs = soup.find_all('input', {'name': re.compile(r'price', re.I)})
+        for inp in price_inputs:
+            val = inp.get('value', '')
+            if val:
+                try:
+                    detail.price = float(val.replace(',', '.').replace(' ', ''))
+                    logger.debug(f"[PARSE] Prix: {detail.price}")
+                    break
+                except:
+                    pass
+
+        # ========== IMAGES ==========
+        # Chercher toutes les images du produit
+        for img in soup.find_all('img'):
+            src = img.get('src', '')
+            alt = img.get('alt', '').lower()
+
+            if not src or 'placeholder' in src.lower():
+                continue
+
+            # Construire URL complète si relative
+            if src.startswith('/'):
+                src = f"{self.BASE_URL}{src}"
+            elif not src.startswith('http'):
+                continue
+
+            # Classer l'image selon son type
+            if 'edito' in src.lower() or 'edito' in alt:
+                detail.images.edito = src
+            elif 'facing' in src.lower() or '2d' in alt:
+                detail.images.facing_2d = src
+            elif 'simul' in src.lower() or '3d' in alt:
+                detail.images.simul_3d = src
+            elif 'landscape' in src.lower() or 'paysage' in alt:
+                detail.images.landscape = src
+            elif 'lengow' in src.lower():
+                detail.images.lengow = src
+            elif 'back' in src.lower() or 'verso' in alt:
+                detail.images.back_card = src
+            elif 'squared' in src.lower() or 'carre' in alt:
+                detail.images.squared = src
+            elif 'header' in src.lower():
+                detail.images.header.append(src)
+
+        # Chercher aussi dans les liens d'images
+        for a in soup.find_all('a', href=re.compile(r'\.(jpg|jpeg|png|gif|webp)', re.I)):
+            href = a.get('href', '')
+            if href.startswith('/'):
+                href = f"{self.BASE_URL}{href}"
+
+            link_text = a.get_text(strip=True).lower()
+            if 'edito' in link_text and not detail.images.edito:
+                detail.images.edito = href
+            elif 'facing' in link_text and not detail.images.facing_2d:
+                detail.images.facing_2d = href
+
+        logger.debug(f"[PARSE] Images: edito={bool(detail.images.edito)}, facing={bool(detail.images.facing_2d)}")
+
+        # ========== DESCRIPTIONS ==========
         textareas = soup.find_all('textarea')
         logger.debug(f"[PARSE] {len(textareas)} textareas trouvés")
-        
-        # Lister les noms des textareas pour debug
-        ta_names = [ta.get('id', ta.get('name', 'unnamed')) for ta in textareas]
-        logger.debug(f"[PARSE] Noms textareas: {ta_names[:10]}...")  # Premiers 10
-        
+
         bullet_points = []
         for ta in textareas:
             ta_id = ta.get('id', ta.get('name', ''))
             content = ta.get_text(strip=True)
-            
+
             if not content:
                 continue
-            
+
             # Nettoyer HTML
             content_clean = re.sub(r'<[^>]+>', ' ', content)
             content_clean = re.sub(r'\s+', ' ', content_clean).strip()
-            
+
             # Langue
             lang_match = re.search(r'_([a-z]{2}(?:_[A-Z]{2})?)$', ta_id)
             lang = lang_match.group(1) if lang_match else 'fr'
-            
-            logger.debug(f"[PARSE] Textarea {ta_id}: {len(content_clean)} chars")
-            
+
+            # Mapper les textareas aux descriptions
             if 'targetDescription' in ta_id:
                 detail.descriptions.target_description[lang] = content_clean
                 if lang == 'fr' and content_clean:
@@ -467,7 +590,7 @@ class WonderboxScraper:
                     bullet_points.append(content_clean)
             elif 'shortDescription' in ta_id:
                 detail.descriptions.short_description[lang] = content_clean
-            elif 'extraDescription' in ta_id:
+            elif 'extraDescription' in ta_id or 'fullDescription' in ta_id:
                 detail.descriptions.full_description[lang] = content_clean
             elif 'catchPhrase' in ta_id:
                 detail.descriptions.catch_phrase[lang] = content_clean
@@ -477,127 +600,257 @@ class WonderboxScraper:
                 detail.descriptions.why_you_will_love[lang] = content_clean
             elif 'presentation_title' in ta_id or 'presentationTitle' in ta_id:
                 detail.descriptions.title[lang] = content_clean
-        
+
         detail.descriptions.bullet_points = bullet_points[:4]
-        logger.debug(f"[PARSE] Bullet points: {len(detail.descriptions.bullet_points)}")
-        
-        # Matérialisations
-        logger.debug("[PARSE] Recherche matérialisations...")
+
+        # ========== MATÉRIALISATIONS ==========
         mat_table = soup.find('table', class_='box-materializations')
+        if not mat_table:
+            # Essayer d'autres sélecteurs
+            mat_table = soup.find('table', class_=re.compile(r'material', re.I))
+
         if mat_table:
-            logger.debug("[PARSE] Table box-materializations trouvée")
+            logger.debug("[PARSE] Table matérialisations trouvée")
             current_mat = None
-            
+
             for row in mat_table.find_all('tr'):
                 cells = row.find_all('td')
                 if len(cells) >= 2:
                     first = cells[0].get_text(strip=True)
                     second = cells[1].get_text(strip=True)
-                    
-                    if first in ['Rematerialisé', 'Dématerialisé', 'Échange']:
+
+                    if first in ['Rematerialisé', 'Dématerialisé', 'Échange', 'Rematérialisé', 'Dématérialisé']:
                         dlu_match = re.search(r'DLU\s*(glissante|fixe)?\s*:?\s*(\d+)\s*mois', second)
                         current_mat = Materialization(
                             type=first,
                             dlu=f"{dlu_match.group(2)} mois" if dlu_match else "",
                             dlu_type=dlu_match.group(1) if dlu_match and dlu_match.group(1) else ""
                         )
-                        logger.debug(f"[PARSE] Mat type: {first}")
-                    elif first == 'Available' and current_mat:
-                        current_mat.available = second.lower() == 'oui'
+                    elif first.lower() == 'available' and current_mat:
+                        current_mat.available = second.lower() in ['oui', 'yes', '1', 'true']
                     elif current_mat and re.match(r'^[A-Z]{2}[A-Z0-9]+', first):
                         current_mat.code = first
                         if re.match(r'^\d{13}$', second):
                             current_mat.ean = second
                         detail.materializations.append(current_mat)
-                        logger.debug(f"[PARSE] Mat ajoutée: {current_mat.type} - {current_mat.code}")
                         current_mat = None
-        else:
-            logger.warning("[PARSE] ⚠️ Table box-materializations non trouvée")
-            # Lister toutes les tables pour debug
-            tables = soup.find_all('table')
-            logger.debug(f"[PARSE] Tables trouvées: {[t.get('class', ['unnamed']) for t in tables]}")
-        
-        logger.debug(f"[PARSE] Matérialisations: {len(detail.materializations)}")
-        
-        # EAN codes
+
+        # ========== EAN CODES ==========
+        # Extraire tous les codes EAN (13 chiffres)
+        ean_pattern = re.compile(r'\b\d{13}\b')
         for span in soup.find_all('span', class_='code'):
             text = span.get_text(strip=True)
             if text and text not in detail.ean_codes:
                 detail.ean_codes.append(text)
+
+        # Chercher aussi dans les inputs
+        for inp in soup.find_all('input'):
+            val = inp.get('value', '')
+            name = inp.get('name', '').lower()
+            if 'ean' in name and val and re.match(r'^\d{13}$', val):
+                if val not in detail.ean_codes:
+                    detail.ean_codes.append(val)
+
+        # Chercher dans le HTML brut
+        ean_matches = ean_pattern.findall(html)
+        for ean in ean_matches[:10]:  # Limiter à 10
+            if ean not in detail.ean_codes:
+                detail.ean_codes.append(ean)
+
         logger.debug(f"[PARSE] EAN codes: {detail.ean_codes}")
-        
+        logger.debug(f"[PARSE] Matérialisations: {len(detail.materializations)}")
+
         return detail
     
     def _parse_product_characteristics(self, html: str, detail: ProductDetail):
-        """Parse l'onglet Caractéristiques"""
+        """Parse l'onglet Caractéristiques - Extraction MAXIMALE"""
         logger.debug("[PARSE] Parsing Caractéristiques")
         soup = BeautifulSoup(html, 'html.parser')
-        
-        # Durées (nuits) - checkboxes cochées
-        for cb in soup.find_all('input', {'name': 'boxDetails_durations[]'}):
+
+        # ========== DURÉES ==========
+        for cb in soup.find_all('input', {'name': re.compile(r'duration', re.I)}):
             if cb.get('checked'):
                 value = cb.get('value', '')
-                if value:
+                if value and value not in detail.characteristics.durations:
                     detail.characteristics.durations.append(value)
                     logger.debug(f"[PARSE] Durée: {value}")
-        
-        # Textareas pour meta
+
+        # ========== TAGS ==========
+        for cb in soup.find_all('input', {'name': re.compile(r'tag', re.I)}):
+            if cb.get('checked'):
+                value = cb.get('value', '')
+                label = cb.find_next('label')
+                tag_name = label.get_text(strip=True) if label else value
+                if tag_name and tag_name not in detail.characteristics.tags:
+                    detail.characteristics.tags.append(tag_name)
+
+        # ========== ACTIVITÉS FAVORITES ==========
+        for cb in soup.find_all('input', {'name': re.compile(r'favorite|activity', re.I)}):
+            if cb.get('checked'):
+                value = cb.get('value', '')
+                label = cb.find_next('label')
+                activity_name = label.get_text(strip=True) if label else value
+                if activity_name and activity_name not in detail.characteristics.favorite_activities:
+                    detail.characteristics.favorite_activities.append(activity_name)
+
+        # ========== WEIGHT (POIDS) ==========
+        weight_inputs = soup.find_all('input', {'name': re.compile(r'weight|poids', re.I)})
+        for inp in weight_inputs:
+            val = inp.get('value', '')
+            if val:
+                detail.characteristics.weight = val
+                logger.debug(f"[PARSE] Poids: {val}")
+                break
+
+        # ========== BOOKLET URLS ==========
+        for a in soup.find_all('a', href=re.compile(r'booklet|livret|pdf', re.I)):
+            href = a.get('href', '')
+            text = a.get_text(strip=True).lower()
+            if href:
+                if href.startswith('/'):
+                    href = f"{self.BASE_URL}{href}"
+                if 'sans' in text or 'without' in text:
+                    detail.characteristics.booklet_url_without_addresses = href
+                else:
+                    detail.characteristics.booklet_url_with_addresses = href
+
+        # Chercher aussi dans les inputs cachés ou liens
+        for inp in soup.find_all('input', {'name': re.compile(r'booklet', re.I)}):
+            val = inp.get('value', '')
+            if val:
+                if 'without' in inp.get('name', '').lower():
+                    detail.characteristics.booklet_url_without_addresses = val
+                else:
+                    detail.characteristics.booklet_url_with_addresses = val
+
+        # ========== META SEO ==========
         for ta in soup.find_all('textarea'):
-            ta_id = ta.get('id', '')
+            ta_id = ta.get('id', ta.get('name', ''))
             content = ta.get_text(strip=True)
             if not content:
                 continue
-            
+
             lang_match = re.search(r'_([a-z]{2}(?:_[A-Z]{2})?)$', ta_id)
             lang = lang_match.group(1) if lang_match else 'fr'
-            
+
             if 'metaTitle' in ta_id:
                 detail.characteristics.meta_title[lang] = content
             elif 'metaKeywords' in ta_id:
                 detail.characteristics.meta_keywords[lang] = content
             elif 'metaDescription' in ta_id:
                 detail.characteristics.meta_description[lang] = content
+
+        # ========== SELECTS SUPPLÉMENTAIRES ==========
+        for select in soup.find_all('select'):
+            name = select.get('name', select.get('id', '')).lower()
+            selected = select.find('option', selected=True)
+            if selected:
+                val = selected.get_text(strip=True)
+                if val and val not in ['--', '', 'Aucun']:
+                    # Log tout select pour debug
+                    logger.debug(f"[PARSE] Select {name}: {val}")
+
+        logger.debug(f"[PARSE] Tags: {len(detail.characteristics.tags)}")
+        logger.debug(f"[PARSE] Durées: {detail.characteristics.durations}")
+        logger.debug(f"[PARSE] Booklets: with={bool(detail.characteristics.booklet_url_with_addresses)}, without={bool(detail.characteristics.booklet_url_without_addresses)}")
     
     def _parse_product_web(self, html: str, detail: ProductDetail):
-        """Parse l'onglet Web (Merchandising)"""
+        """Parse l'onglet Web (Merchandising) - Extraction MAXIMALE"""
         logger.debug("[PARSE] Parsing Web/Merchandising")
         soup = BeautifulSoup(html, 'html.parser')
-        
-        # Selects
+
+        # ========== SELECTS ==========
         for select in soup.find_all('select'):
             name = select.get('name', select.get('id', ''))
             selected = select.find('option', selected=True)
             if selected:
                 val = selected.get_text(strip=True)
-                if val and val not in ['--', '']:
-                    if 'productType' in name:
+                selected_value = selected.get('value', '')
+                if val and val not in ['--', '', 'Aucun', 'Sélectionner']:
+                    name_lower = name.lower()
+                    if 'producttype' in name_lower or 'product_type' in name_lower:
                         detail.merchandising.product_type = val
                         logger.debug(f"[PARSE] productType: {val}")
-                    elif 'universe' in name:
+                    elif 'universe' in name_lower or 'univers' in name_lower:
                         detail.merchandising.universe = val
                         logger.debug(f"[PARSE] universe: {val}")
-                    elif 'pictogram' in name:
+                    elif 'pictogram' in name_lower or 'picto' in name_lower:
                         detail.merchandising.pictogram = val
                         logger.debug(f"[PARSE] pictogram: {val}")
-        
-        # Checkboxes cochées
-        for cb in soup.find_all('input', type='checkbox', checked=True):
-            name = cb.get('name', '')
-            value = cb.get('value', '')
-            
-            if 'boxThematics' in name:
+
+        # ========== THÉMATIQUES ==========
+        for cb in soup.find_all('input', {'name': re.compile(r'thematic|thématique', re.I)}):
+            if cb.get('checked'):
+                value = cb.get('value', '')
+                # Chercher le label associé
                 parent = cb.parent
-                label = parent.get_text(strip=True) if parent else value
-                detail.merchandising.thematics.append(label)
-            elif 'targetTypes' in name:
-                detail.merchandising.target_types.append(value)
-            elif 'targetAges' in name:
-                detail.merchandising.target_ages.append(value)
-            elif 'targetNumbers' in name:
-                detail.merchandising.target_numbers.append(value)
-        
+                label_text = None
+
+                # Chercher label à côté
+                label = cb.find_next('label')
+                if label:
+                    label_text = label.get_text(strip=True)
+                elif parent:
+                    label_text = parent.get_text(strip=True)
+
+                thematic = label_text or value
+                if thematic and thematic not in detail.merchandising.thematics:
+                    detail.merchandising.thematics.append(thematic)
+
+        # ========== TYPES DE CIBLES ==========
+        for cb in soup.find_all('input', {'name': re.compile(r'targetType|target_type|cible', re.I)}):
+            if cb.get('checked'):
+                value = cb.get('value', '')
+                label = cb.find_next('label')
+                target = label.get_text(strip=True) if label else value
+                if target and target not in detail.merchandising.target_types:
+                    detail.merchandising.target_types.append(target)
+
+        # ========== TRANCHES D'ÂGE ==========
+        for cb in soup.find_all('input', {'name': re.compile(r'targetAge|target_age|age', re.I)}):
+            if cb.get('checked'):
+                value = cb.get('value', '')
+                label = cb.find_next('label')
+                age = label.get_text(strip=True) if label else value
+                if age and age not in detail.merchandising.target_ages:
+                    detail.merchandising.target_ages.append(age)
+
+        # ========== NOMBRE DE PERSONNES ==========
+        for cb in soup.find_all('input', {'name': re.compile(r'targetNumber|target_number|nombre|person', re.I)}):
+            if cb.get('checked'):
+                value = cb.get('value', '')
+                label = cb.find_next('label')
+                number = label.get_text(strip=True) if label else value
+                if number and number not in detail.merchandising.target_numbers:
+                    detail.merchandising.target_numbers.append(number)
+
+        # ========== TOUS LES CHECKBOXES COCHÉS (Fallback) ==========
+        for cb in soup.find_all('input', type='checkbox', checked=True):
+            name = cb.get('name', '').lower()
+            value = cb.get('value', '')
+
+            # Skip si déjà traité
+            if any(x in name for x in ['thematic', 'targettype', 'targetage', 'targetnumber']):
+                continue
+
+            # Extraire le label
+            label = cb.find_next('label')
+            label_text = label.get_text(strip=True) if label else value
+
+            # Classer selon le nom du champ
+            if 'boxthematic' in name and label_text not in detail.merchandising.thematics:
+                detail.merchandising.thematics.append(label_text)
+            elif 'targettype' in name and label_text not in detail.merchandising.target_types:
+                detail.merchandising.target_types.append(label_text)
+            elif 'targetage' in name and label_text not in detail.merchandising.target_ages:
+                detail.merchandising.target_ages.append(label_text)
+            elif 'targetnumber' in name and label_text not in detail.merchandising.target_numbers:
+                detail.merchandising.target_numbers.append(label_text)
+
         logger.debug(f"[PARSE] Thematics: {detail.merchandising.thematics}")
         logger.debug(f"[PARSE] Target types: {detail.merchandising.target_types}")
+        logger.debug(f"[PARSE] Target ages: {detail.merchandising.target_ages}")
+        logger.debug(f"[PARSE] Target numbers: {detail.merchandising.target_numbers}")
     
     # ========================================================================
     # ACTIVITÉS
@@ -663,53 +916,121 @@ class WonderboxScraper:
         return activities, total_results, total_pages
     
     def _parse_activity_row(self, row) -> Optional[Activity]:
-        """Parse une ligne activité"""
+        """Parse une ligne activité - Extraction MAXIMALE"""
         cells = row.find_all('td')
         if len(cells) < 7:
             return None
-        
+
         activity = Activity()
-        
-        # Statut depuis classe
-        for cls in row.get('class', []):
+
+        # ========== STATUT DEPUIS CLASSE ==========
+        row_classes = row.get('class', [])
+        for cls in row_classes:
             if cls not in ['bg-light', 'bg-dark']:
                 activity.status = cls
+                # Interpréter les classes courantes
+                cls_lower = cls.lower()
+                if 'active' in cls_lower and 'publish' in cls_lower:
+                    activity.web_status = 'ACTIVE'
+                elif 'active' in cls_lower:
+                    activity.status = 'active'
+                elif 'archived' in cls_lower:
+                    activity.status = 'archived'
+                    activity.web_status = 'ARCHIVED'
+                elif 'pending' in cls_lower:
+                    activity.status = 'pending'
                 break
-        
-        # Code et ID
+
+        # ========== CODE ET ID ==========
         if len(cells) > 2:
             code_link = cells[2].find('a', href=re.compile(r'/activity/index/id/'))
             if code_link:
                 activity.code = code_link.get_text(strip=True)
-                match = re.search(r'/id/(\d+)', code_link.get('href', ''))
+                href = code_link.get('href', '')
+                match = re.search(r'/id/(\d+)', href)
                 if match:
                     activity.id = int(match.group(1))
                     activity.detail_url = f"{self.BASE_URL}/activity/index/id/{activity.id}"
-        
-        # Nom, type, cible
+
+        # ========== STATUT TEXTUEL (cellule 3 souvent) ==========
+        if len(cells) > 3:
+            status_text = cells[3].get_text(strip=True)
+            if status_text and status_text not in ['-', '']:
+                if not activity.status:
+                    activity.status = status_text
+
+        # ========== WEB STATUS (cellule 4 souvent) ==========
+        if len(cells) > 4:
+            web_status_text = cells[4].get_text(strip=True)
+            if web_status_text and web_status_text not in ['-', '']:
+                activity.web_status = web_status_text
+
+        # ========== NOM, TYPE, CIBLE ==========
         if len(cells) > 5:
             name_link = cells[5].find('a', href=re.compile(r'/activity/index/id/'))
             if name_link:
                 activity.name = name_link.get_text(strip=True)
+
             parts = cells[5].get_text(separator='|', strip=True).split('|')
             if len(parts) >= 2:
                 activity.activity_type = parts[1].strip()
+            if len(parts) >= 3:
+                # Peut contenir le sous-type
+                activity.activity_subtype = parts[2].strip() if parts[2].strip() not in ['-', ''] else ""
             if len(parts) >= 4:
                 activity.target = parts[3].strip()
-        
-        # Location
+
+        # ========== LOCATION COMPLÈTE ==========
         if len(cells) > 6:
             loc_link = cells[6].find('a', href=re.compile(r'/location/index/id/'))
             if loc_link:
                 activity.location_name = loc_link.get_text(strip=True)
+                # Extraire l'ID du lieu
+                loc_href = loc_link.get('href', '')
+                loc_id_match = re.search(r'/id/(\d+)', loc_href)
+                if loc_id_match:
+                    activity.location_id = int(loc_id_match.group(1))
+
             parts = cells[6].get_text(separator='|', strip=True).split('|')
-            if len(parts) >= 5:
+            if len(parts) >= 2:
                 activity.location_address = parts[1].strip()
+            if len(parts) >= 3:
                 activity.location_zipcode = parts[2].strip()
+            if len(parts) >= 4:
                 activity.location_city = parts[3].strip()
+            if len(parts) >= 5:
                 activity.location_country = parts[4].strip()
-        
-        # Prix
+            if len(parts) >= 6:
+                # Peut contenir code lieu ou région
+                extra = parts[5].strip()
+                if re.match(r'^[A-Z]{2}\d+', extra):
+                    activity.location_code = extra
+                else:
+                    activity.location_region = extra
+
+        # ========== PARTENAIRE (cellule supplémentaire parfois) ==========
+        for i, cell in enumerate(cells):
+            cell_html = str(cell)
+            if '/partner/index/id/' in cell_html:
+                partner_link = cell.find('a', href=re.compile(r'/partner/index/id/'))
+                if partner_link:
+                    activity.partner_name = partner_link.get_text(strip=True)
+                break
+
+        # ========== DURÉE / POIDS (colonnes supplémentaires) ==========
+        for cell in cells:
+            cell_text = cell.get_text(strip=True).lower()
+            # Durée (ex: "2h", "30min", "1 jour")
+            duration_match = re.search(r'(\d+)\s*(h|min|jour|day|nuit|night)', cell_text)
+            if duration_match and not activity.duration:
+                activity.duration = f"{duration_match.group(1)}{duration_match.group(2)}"
+
+            # Nombre de personnes
+            persons_match = re.search(r'(\d+)\s*(pers|person|pax)', cell_text)
+            if persons_match and not activity.nb_persons:
+                activity.nb_persons = persons_match.group(1)
+
+        # ========== PRIX ==========
         if len(cells) > 7:
             price_text = cells[7].get_text(strip=True)
             match = re.search(r'([\d\s,\.]+)\s*€', price_text)
@@ -718,13 +1039,42 @@ class WonderboxScraper:
                     activity.price = float(match.group(1).replace(' ', '').replace(',', '.'))
                 except:
                     pass
+
+            # Pays
             country_match = re.search(r'\(([^)]+)\)', price_text)
             if country_match:
                 activity.price_countries = country_match.group(1).strip()
-        
+
+        # ========== PRIX PARTENAIRE / MARGE (colonnes supplémentaires) ==========
+        for cell in cells[-3:]:  # Vérifier les dernières colonnes
+            cell_text = cell.get_text(strip=True)
+            # Prix partenaire
+            if 'partenaire' in str(cell).lower() or 'partner' in str(cell).lower():
+                partner_price_match = re.search(r'([\d\s,\.]+)\s*€', cell_text)
+                if partner_price_match:
+                    try:
+                        activity.partner_price = float(partner_price_match.group(1).replace(' ', '').replace(',', '.'))
+                    except:
+                        pass
+
+            # Marge
+            margin_match = re.search(r'([\d,\.]+)\s*%', cell_text)
+            if margin_match:
+                try:
+                    activity.margin_rate = float(margin_match.group(1).replace(',', '.'))
+                except:
+                    pass
+
+        # ========== PUBLISHER (colonne supplémentaire) ==========
+        for cell in cells:
+            cell_text = cell.get_text(strip=True).upper()
+            if cell_text in ['FRANCE', 'BELGIUM', 'SPAIN', 'ITALY', 'PORTUGAL', 'NETHERLANDS']:
+                activity.publisher = cell_text
+                break
+
         if not activity.code and not activity.name:
             return None
-        
+
         return activity
     
     def get_activity_detail(self, activity_id: int, fetch_all_tabs: bool = True) -> Optional[ActivityDetail]:
@@ -766,88 +1116,312 @@ class WonderboxScraper:
         return detail
     
     def _parse_activity_presentation(self, html: str, activity_id: int) -> Optional[ActivityDetail]:
-        """Parse l'onglet Présentation d'une activité"""
+        """Parse l'onglet Présentation d'une activité - Extraction MAXIMALE"""
         logger.debug("[PARSE] Parsing Présentation activité")
         soup = BeautifulSoup(html, 'html.parser')
-        
+
         detail = ActivityDetail(id=activity_id)
         detail.detail_url = f"{self.BASE_URL}/activity/index/id/{activity_id}"
-        
-        # Nom depuis h1
+
+        # ========== NOM ==========
         h1 = soup.find('h1')
         if h1:
             raw_name = h1.get_text(strip=True)
             detail.name = re.sub(r'^[^\w]*', '', raw_name)
             logger.debug(f"[PARSE] Nom: {detail.name}")
-        
-        # Code depuis liens
+
+        # ========== CODE ==========
         for a in soup.find_all('a', href=re.compile(r'/activity/index/id/')):
             text = a.get_text(strip=True)
             if re.match(r'^[A-Z0-9]{5,}$', text):
                 detail.code = text
-                logger.debug(f"[PARSE] Code: {detail.code}")
                 break
-        
-        # Si pas trouvé, chercher dans le HTML brut
+
         if not detail.code:
             code_match = re.search(r'>([A-Z][A-Z0-9]{5,})</a>', html)
             if code_match:
                 detail.code = code_match.group(1)
-                logger.debug(f"[PARSE] Code (fallback): {detail.code}")
-        
-        # Location depuis les liens
+
+        # Aussi chercher dans les inputs
+        code_input = soup.find('input', {'name': re.compile(r'code', re.I)})
+        if code_input and code_input.get('value') and not detail.code:
+            detail.code = code_input.get('value')
+
+        logger.debug(f"[PARSE] Code: {detail.code}")
+
+        # ========== STATUTS ==========
+        for select in soup.find_all('select'):
+            name = select.get('name', select.get('id', '')).lower()
+            selected = select.find('option', selected=True)
+            if selected:
+                val = selected.get_text(strip=True)
+                if val and val not in ['--', '', 'Aucun']:
+                    if 'status' in name and 'web' not in name:
+                        detail.status = val
+                        logger.debug(f"[PARSE] Status: {val}")
+                    elif 'webstatus' in name or 'web_status' in name:
+                        detail.web_status = val
+                        logger.debug(f"[PARSE] Web Status: {val}")
+                    elif 'publisher' in name:
+                        detail.publisher = val
+                        logger.debug(f"[PARSE] Publisher: {val}")
+                    elif 'target' in name:
+                        detail.target = val
+                        logger.debug(f"[PARSE] Target: {val}")
+
+        # ========== LOCATION COMPLÈTE ==========
         loc_link = soup.find('a', href=re.compile(r'/location/index/id/'))
         if loc_link:
             detail.location.name = loc_link.get_text(strip=True)
             match = re.search(r'/id/(\d+)', loc_link.get('href', ''))
             if match:
                 detail.location.id = int(match.group(1))
-            logger.debug(f"[PARSE] Location: {detail.location.name}")
-        
+
+        # Extraire adresse depuis les inputs ou textes
+        for inp in soup.find_all('input'):
+            name = inp.get('name', '').lower()
+            value = inp.get('value', '')
+            if not value:
+                continue
+
+            if 'address' in name or 'adresse' in name:
+                detail.location.address = value
+            elif 'zipcode' in name or 'postal' in name or 'cp' in name:
+                detail.location.zipcode = value
+            elif 'city' in name or 'ville' in name:
+                detail.location.city = value
+            elif 'country' in name or 'pays' in name:
+                detail.location.country = value
+            elif 'phone' in name or 'tel' in name:
+                detail.location.phone = value
+            elif 'email' in name:
+                detail.location.email = value
+            elif 'website' in name or 'url' in name:
+                detail.location.website = value
+            elif 'lat' in name:
+                detail.location.latitude = value
+            elif 'lon' in name or 'lng' in name:
+                detail.location.longitude = value
+            elif 'region' in name:
+                detail.location.region = value
+            elif 'department' in name:
+                detail.location.department = value
+
+        # Chercher aussi dans les selects pour pays
+        for select in soup.find_all('select', {'name': re.compile(r'country|pays', re.I)}):
+            selected = select.find('option', selected=True)
+            if selected:
+                detail.location.country = selected.get_text(strip=True)
+
+        logger.debug(f"[PARSE] Location: {detail.location.name}, {detail.location.city}, {detail.location.country}")
+
+        # ========== PARTENAIRE ==========
+        partner_link = soup.find('a', href=re.compile(r'/partner/index/id/'))
+        if partner_link:
+            detail.partner_name = partner_link.get_text(strip=True)
+            # Extraire le code partenaire si présent
+            partner_code_match = re.search(r'>([A-Z0-9]+)</a>', str(partner_link))
+            if partner_code_match:
+                potential_code = partner_code_match.group(1)
+                if re.match(r'^[A-Z0-9]{3,}$', potential_code):
+                    detail.partner_code = potential_code
+
+        # ========== DESCRIPTIONS ==========
+        for ta in soup.find_all('textarea'):
+            ta_id = ta.get('id', ta.get('name', ''))
+            content = ta.get_text(strip=True)
+
+            if not content:
+                continue
+
+            # Nettoyer HTML
+            content_clean = re.sub(r'<[^>]+>', ' ', content)
+            content_clean = re.sub(r'\s+', ' ', content_clean).strip()
+
+            # Langue
+            lang_match = re.search(r'_([a-z]{2}(?:_[A-Z]{2})?)$', ta_id)
+            lang = lang_match.group(1) if lang_match else 'fr'
+
+            ta_id_lower = ta_id.lower()
+            if 'name' in ta_id_lower or 'nom' in ta_id_lower:
+                detail.descriptions.name[lang] = content_clean
+            elif 'description' in ta_id_lower and 'short' not in ta_id_lower:
+                detail.descriptions.description[lang] = content_clean
+            elif 'short' in ta_id_lower:
+                detail.descriptions.short_description[lang] = content_clean
+            elif 'condition' in ta_id_lower:
+                detail.descriptions.conditions[lang] = content_clean
+            elif 'practical' in ta_id_lower or 'pratique' in ta_id_lower:
+                detail.descriptions.practical_info[lang] = content_clean
+            elif 'includ' in ta_id_lower or 'compris' in ta_id_lower:
+                if 'not' in ta_id_lower or 'non' in ta_id_lower:
+                    detail.descriptions.not_included[lang] = content_clean
+                else:
+                    detail.descriptions.included[lang] = content_clean
+            elif 'highlight' in ta_id_lower or 'point' in ta_id_lower:
+                detail.descriptions.highlights[lang] = content_clean
+
+        # ========== IMAGES ==========
+        for img in soup.find_all('img'):
+            src = img.get('src', '')
+            if src and 'placeholder' not in src.lower():
+                if src.startswith('/'):
+                    src = f"{self.BASE_URL}{src}"
+                if src.startswith('http') and src not in detail.images:
+                    detail.images.append(src)
+
+        # ========== PRODUITS ASSOCIÉS ==========
+        for a in soup.find_all('a', href=re.compile(r'/box/index/id/')):
+            text = a.get_text(strip=True)
+            if re.match(r'^[A-Z0-9]{6,}$', text):  # Code coffret
+                if text not in detail.products:
+                    detail.products.append(text)
+
+        logger.debug(f"[PARSE] Images: {len(detail.images)}")
+        logger.debug(f"[PARSE] Produits associés: {detail.products}")
+
         return detail
     
     def _parse_activity_characteristics(self, html: str, detail: ActivityDetail):
-        """Parse l'onglet Caractéristiques d'une activité"""
+        """Parse l'onglet Caractéristiques d'une activité - Extraction MAXIMALE"""
         logger.debug("[PARSE] Parsing Caractéristiques activité")
         soup = BeautifulSoup(html, 'html.parser')
-        
-        # Selects
+
+        # ========== SELECTS ==========
         for select in soup.find_all('select'):
-            name = select.get('name', '')
+            name = select.get('name', select.get('id', '')).lower()
             selected = select.find('option', selected=True)
             if selected:
                 val = selected.get_text(strip=True)
-                if val and val not in ['--', '', 'Aucun']:
-                    if 'duration' in name.lower():
+                selected_value = selected.get('value', '')
+                if val and val not in ['--', '', 'Aucun', 'Sélectionner']:
+                    if 'duration' in name:
                         detail.characteristics.duration = val
                         logger.debug(f"[PARSE] Duration: {val}")
-                    elif 'roomType' in name:
+                    elif 'roomtype' in name or 'room_type' in name:
                         detail.characteristics.room_type = val
-        
-        # Inputs
-        for inp in soup.find_all('input', type='text'):
-            name = inp.get('name', '')
+                        logger.debug(f"[PARSE] Room Type: {val}")
+                    elif 'activitytype' in name or 'activity_type' in name:
+                        detail.characteristics.activity_type = val
+                        logger.debug(f"[PARSE] Activity Type: {val}")
+                    elif 'subtype' in name:
+                        detail.characteristics.activity_subtype = val
+                    elif 'daymoment' in name or 'day_moment' in name:
+                        detail.characteristics.day_moment = val
+                    elif 'mealmoment' in name or 'meal_moment' in name:
+                        detail.characteristics.meal_moment = val
+                    elif 'family' in name or 'famille' in name:
+                        detail.characteristics.family = val
+                    elif 'edition' in name:
+                        detail.characteristics.edition = val
+                    elif 'promo' in name:
+                        detail.characteristics.promo_action = val
+                    elif 'person' in name or 'nb' in name:
+                        detail.characteristics.nb_persons = val
+                    elif 'validity' in name or 'validite' in name:
+                        detail.characteristics.validity_days = val
+                    elif 'booking' in name or 'delay' in name or 'delai' in name:
+                        detail.characteristics.booking_delay = val
+                    elif 'cancel' in name or 'annulation' in name:
+                        detail.characteristics.cancellation_policy = val
+
+        # ========== INPUTS ==========
+        for inp in soup.find_all('input'):
+            input_type = inp.get('type', 'text').lower()
+            name = inp.get('name', inp.get('id', '')).lower()
             value = inp.get('value', '')
-            if value:
-                if 'weight' in name.lower():
+
+            if input_type == 'text' and value:
+                if 'weight' in name or 'poids' in name:
                     detail.characteristics.weight = value
                     logger.debug(f"[PARSE] Weight: {value}")
-        
-        # Checkboxes
-        for cb in soup.find_all('input', type='checkbox', checked=True):
-            name = cb.get('name', '')
+                elif 'capacity' in name and 'min' in name:
+                    try:
+                        detail.characteristics.capacity_min = int(value)
+                    except:
+                        pass
+                elif 'capacity' in name and 'max' in name:
+                    try:
+                        detail.characteristics.capacity_max = int(value)
+                    except:
+                        pass
+                elif 'person' in name or 'nb' in name:
+                    detail.characteristics.nb_persons = value
+
+        # ========== CHECKBOXES ==========
+        for cb in soup.find_all('input', type='checkbox'):
+            name = cb.get('name', '').lower()
             value = cb.get('value', '')
-            
-            if 'ageBrackets' in name:
-                detail.characteristics.age_brackets.append(value)
-            elif 'hotelService' in name:
-                detail.characteristics.hotel_service = True
-            elif 'manualCheckAllowed' in name:
-                detail.characteristics.manual_check_allowed = True
-            elif 'reservationRequired' in name:
-                detail.characteristics.reservation_required = True
-        
+            is_checked = cb.get('checked') is not None
+
+            # Extraire le label
+            label = cb.find_next('label')
+            label_text = label.get_text(strip=True) if label else value
+
+            if is_checked:
+                if 'agebracket' in name or 'age_bracket' in name or 'age' in name:
+                    if label_text and label_text not in detail.characteristics.age_brackets:
+                        detail.characteristics.age_brackets.append(label_text)
+                elif 'hotelservice' in name or 'hotel_service' in name:
+                    detail.characteristics.hotel_service = True
+                elif 'manualcheck' in name or 'manual_check' in name:
+                    detail.characteristics.manual_check_allowed = True
+                elif 'reservation' in name:
+                    detail.characteristics.reservation_required = True
+                elif 'season' in name or 'saison' in name:
+                    if label_text and label_text not in detail.characteristics.seasons:
+                        detail.characteristics.seasons.append(label_text)
+                elif 'day' in name and 'available' in name:
+                    if label_text and label_text not in detail.characteristics.days_available:
+                        detail.characteristics.days_available.append(label_text)
+                elif 'language' in name or 'langue' in name:
+                    if label_text and label_text not in detail.characteristics.languages:
+                        detail.characteristics.languages.append(label_text)
+                elif 'access' in name:
+                    if label_text and label_text not in detail.characteristics.accessibility:
+                        detail.characteristics.accessibility.append(label_text)
+                elif 'equipment' in name and 'provid' in name:
+                    if label_text and label_text not in detail.characteristics.equipment_provided:
+                        detail.characteristics.equipment_provided.append(label_text)
+                elif 'equipment' in name and 'requir' in name:
+                    if label_text and label_text not in detail.characteristics.equipment_required:
+                        detail.characteristics.equipment_required.append(label_text)
+
+        # ========== PRICING ==========
+        for inp in soup.find_all('input'):
+            name = inp.get('name', '').lower()
+            value = inp.get('value', '')
+
+            if not value:
+                continue
+
+            try:
+                float_val = float(value.replace(',', '.').replace(' ', ''))
+                if 'saler' in name:
+                    detail.pricing.salers = value
+                elif 'value' in name and 'price' not in name:
+                    detail.pricing.value = float_val
+                elif 'reimbursement' in name or 'remboursement' in name:
+                    detail.pricing.reimbursement = float_val
+                elif 'margin' in name or 'marge' in name:
+                    detail.pricing.margin_rate = float_val
+                elif 'commission' in name:
+                    if 'rate' in name or 'taux' in name:
+                        detail.pricing.commission_rate = float_val
+                    else:
+                        detail.pricing.commission = float_val
+                elif 'partner' in name and 'price' in name:
+                    detail.pricing.partner_price = float_val
+                elif 'public' in name and 'price' in name:
+                    detail.pricing.public_price = float_val
+            except:
+                pass
+
         logger.debug(f"[PARSE] Age brackets: {detail.characteristics.age_brackets}")
+        logger.debug(f"[PARSE] Duration: {detail.characteristics.duration}")
+        logger.debug(f"[PARSE] Weight: {detail.characteristics.weight}")
+        logger.debug(f"[PARSE] Seasons: {detail.characteristics.seasons}")
+        logger.debug(f"[PARSE] Pricing value: {detail.pricing.value}")
     
     def get_all_activities_for_product(self, box_code: str, publisher: str = "FRANCE",
                                        web_status: str = "ACTIVE") -> List[Activity]:
@@ -908,5 +1482,181 @@ class WonderboxScraper:
                             time.sleep(0.1)
                 
                 time.sleep(0.2)
-        
+
         return all_products
+
+    # ========================================================================
+    # RECHERCHE PAR PAYS / LOCALISATION
+    # ========================================================================
+
+    def search_activities_by_country(self, country: str, publisher: str = "FRANCE",
+                                     web_status: str = "ACTIVE", page: int = 1) -> Tuple[List[Activity], int, int]:
+        """Recherche les activités par pays de localisation"""
+        self._log_separator(f"RECHERCHE ACTIVITÉS PAR PAYS - {country} - Page {page}")
+
+        # Construire l'URL avec le filtre pays
+        url_parts = [
+            f"{self.BASE_URL}/search/activity",
+            f"location_country/{country}"
+        ]
+        if publisher:
+            url_parts.append(f"publisher/{publisher}")
+        if web_status:
+            url_parts.append(f"boxPublishStatus_webStatus/{web_status}")
+        url_parts.extend([
+            "boxedShops_nullable/0",
+            "in_boxedChecks_check_commissionFree/0",
+            "notIn_boxedChecks_check_commissionFree/0",
+            f"page/{page}"
+        ])
+
+        html = self._fetch_page("/".join(url_parts), f"Activités pays {country} page {page}")
+        if not html:
+            return [], 0, 0
+
+        return self._parse_activities_results(html)
+
+    def get_all_activities_by_country(self, country: str, publisher: str = "FRANCE",
+                                      web_status: str = "ACTIVE", max_pages: int = None,
+                                      progress_callback=None) -> List[Activity]:
+        """Récupère toutes les activités d'un pays"""
+        all_activities = []
+        activities, total, total_pages = self.search_activities_by_country(country, publisher, web_status, 1)
+        all_activities.extend(activities)
+
+        if progress_callback:
+            progress_callback(1, total_pages, len(all_activities), total)
+
+        if max_pages:
+            total_pages = min(total_pages, max_pages)
+
+        for page in range(2, total_pages + 1):
+            activities, _, _ = self.search_activities_by_country(country, publisher, web_status, page)
+            all_activities.extend(activities)
+            if progress_callback:
+                progress_callback(page, total_pages, len(all_activities), total)
+            time.sleep(0.3)
+
+        return all_activities
+
+    def search_products_by_country(self, country: str, publisher: str = "FRANCE",
+                                   web_status: str = "ACTIVE", page: int = 1) -> Tuple[List[Product], int, int]:
+        """Recherche les produits par pays"""
+        self._log_separator(f"RECHERCHE PRODUITS PAR PAYS - {country} - Page {page}")
+
+        # Construire l'URL avec le filtre pays
+        url_parts = [f"{self.BASE_URL}/search/box"]
+        if publisher:
+            url_parts.append(f"publisher/{publisher}")
+        if web_status:
+            url_parts.append(f"boxPublishStatus_webStatus/{web_status}")
+        # Ajouter filtre pays (selon l'API du site)
+        url_parts.append(f"country/{country}")
+        url_parts.extend([
+            "boxedShops_nullable/0",
+            "in_boxedChecks_check_commissionFree/0",
+            "notIn_boxedChecks_check_commissionFree/0",
+            f"page/{page}"
+        ])
+
+        html = self._fetch_page("/".join(url_parts), f"Produits pays {country} page {page}")
+        if not html:
+            return [], 0, 0
+
+        return self._parse_search_results(html)
+
+    def get_all_products_by_country(self, country: str, publisher: str = "FRANCE",
+                                    web_status: str = "ACTIVE", max_pages: int = None,
+                                    include_details: bool = False,
+                                    progress_callback=None) -> List[Product]:
+        """Récupère tous les produits d'un pays avec optionnellement leurs détails"""
+        all_products = []
+        products, total, total_pages = self.search_products_by_country(country, publisher, web_status, 1)
+        all_products.extend(products)
+
+        if progress_callback:
+            progress_callback(1, total_pages, len(all_products), total)
+
+        if max_pages:
+            total_pages = min(total_pages, max_pages)
+
+        for page in range(2, total_pages + 1):
+            products, _, _ = self.search_products_by_country(country, publisher, web_status, page)
+            all_products.extend(products)
+            if progress_callback:
+                progress_callback(page, total_pages, len(all_products), total)
+            time.sleep(0.3)
+
+        # Charger les détails si demandé
+        if include_details:
+            logger.info(f"Chargement des détails pour {len(all_products)} produits...")
+            for i, product in enumerate(all_products):
+                if product.id:
+                    if progress_callback:
+                        progress_callback(i + 1, len(all_products), product.code, "détails")
+                    product.details = self.get_product_detail(product.id)
+                    time.sleep(0.2)
+
+        return all_products
+
+    def get_available_countries(self) -> List[str]:
+        """Retourne la liste des pays disponibles"""
+        return [
+            "FR",  # France
+            "BE",  # Belgique
+            "ES",  # Espagne
+            "IT",  # Italie
+            "PT",  # Portugal
+            "NL",  # Pays-Bas
+            "CH",  # Suisse
+            "LU",  # Luxembourg
+            "MC",  # Monaco
+            "AD",  # Andorre
+        ]
+
+    def get_statistics(self, products: List[Product]) -> dict:
+        """Calcule des statistiques sur une liste de produits"""
+        stats = {
+            "total_products": len(products),
+            "products_with_details": sum(1 for p in products if p.details),
+            "products_with_activities": sum(1 for p in products if p.activities),
+            "total_activities": sum(len(p.activities or []) for p in products),
+            "prices": {},
+            "by_publisher": {},
+            "by_status": {},
+            "by_universe": {},
+            "by_product_type": {},
+        }
+
+        # Prix
+        prices = [p.price for p in products if p.price]
+        if prices:
+            stats["prices"] = {
+                "min": min(prices),
+                "max": max(prices),
+                "avg": sum(prices) / len(prices),
+                "count": len(prices)
+            }
+
+        # Par éditeur
+        for p in products:
+            pub = p.publisher or "Unknown"
+            stats["by_publisher"][pub] = stats["by_publisher"].get(pub, 0) + 1
+
+        # Par statut
+        for p in products:
+            status = p.status or p.web_status or "Unknown"
+            stats["by_status"][status] = stats["by_status"].get(status, 0) + 1
+
+        # Par univers (si détails disponibles)
+        for p in products:
+            if p.details and p.details.merchandising.universe:
+                universe = p.details.merchandising.universe
+                stats["by_universe"][universe] = stats["by_universe"].get(universe, 0) + 1
+
+        # Par type
+        for p in products:
+            ptype = p.product_type or "Unknown"
+            stats["by_product_type"][ptype] = stats["by_product_type"].get(ptype, 0) + 1
+
+        return stats

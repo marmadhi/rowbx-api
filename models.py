@@ -120,12 +120,33 @@ class ActivityLocation:
     city: str = ""
     country: str = ""
     code: str = ""
+    phone: str = ""
+    email: str = ""
+    website: str = ""
+    latitude: str = ""
+    longitude: str = ""
+    region: str = ""
+    department: str = ""
+
+
+@dataclass
+class ActivityDescriptions:
+    """Descriptions multilingues d'une activité"""
+    name: Dict[str, str] = field(default_factory=dict)
+    description: Dict[str, str] = field(default_factory=dict)
+    short_description: Dict[str, str] = field(default_factory=dict)
+    conditions: Dict[str, str] = field(default_factory=dict)
+    practical_info: Dict[str, str] = field(default_factory=dict)
+    included: Dict[str, str] = field(default_factory=dict)
+    not_included: Dict[str, str] = field(default_factory=dict)
+    highlights: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class ActivityCharacteristics:
     """Caractéristiques d'une activité"""
     duration: str = ""
+    duration_unit: str = ""
     weight: str = ""
     room_type: str = ""
     age_brackets: List[str] = field(default_factory=list)
@@ -133,11 +154,25 @@ class ActivityCharacteristics:
     manual_check_allowed: bool = False
     reservation_required: bool = False
     activity_type: str = ""
+    activity_subtype: str = ""
     day_moment: str = ""
     meal_moment: str = ""
     family: str = ""
     edition: str = ""
     promo_action: str = ""
+    # Nouveaux champs
+    capacity_min: int = 0
+    capacity_max: int = 0
+    nb_persons: str = ""
+    validity_days: str = ""
+    booking_delay: str = ""
+    cancellation_policy: str = ""
+    seasons: List[str] = field(default_factory=list)
+    days_available: List[str] = field(default_factory=list)
+    languages: List[str] = field(default_factory=list)
+    accessibility: List[str] = field(default_factory=list)
+    equipment_provided: List[str] = field(default_factory=list)
+    equipment_required: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -145,8 +180,14 @@ class ActivityPricing:
     """Données prix d'une activité"""
     salers: str = ""
     value: Optional[float] = None
+    value_currency: str = "EUR"
     reimbursement: Optional[float] = None
     margin_rate: Optional[float] = None
+    commission: Optional[float] = None
+    commission_rate: Optional[float] = None
+    partner_price: Optional[float] = None
+    public_price: Optional[float] = None
+    prices_by_country: Dict[str, float] = field(default_factory=dict)
 
 
 # ============================================================================
@@ -160,12 +201,22 @@ class ActivityDetail:
     code: str = ""
     name: str = ""
     status: str = ""
+    web_status: str = ""
+    publisher: str = ""
+    target: str = ""
     location: ActivityLocation = field(default_factory=ActivityLocation)
+    descriptions: ActivityDescriptions = field(default_factory=ActivityDescriptions)
     characteristics: ActivityCharacteristics = field(default_factory=ActivityCharacteristics)
     pricing: ActivityPricing = field(default_factory=ActivityPricing)
     price: Optional[float] = None
     price_countries: str = ""
     detail_url: str = ""
+    images: List[str] = field(default_factory=list)
+    products: List[str] = field(default_factory=list)  # Codes des coffrets associés
+    partner_name: str = ""
+    partner_code: str = ""
+    created_at: str = ""
+    updated_at: str = ""
 
 
 # ============================================================================
@@ -179,17 +230,33 @@ class Activity:
     code: str = ""
     name: str = ""
     status: str = ""
+    web_status: str = ""
     activity_type: str = ""
+    activity_subtype: str = ""
     target: str = ""
+    publisher: str = ""
+    # Location
+    location_id: int = 0
     location_name: str = ""
     location_address: str = ""
     location_zipcode: str = ""
     location_city: str = ""
     location_country: str = ""
     location_code: str = ""
+    location_region: str = ""
+    location_department: str = ""
+    # Prix
     price: Optional[float] = None
     price_currency: str = "EUR"
     price_countries: str = ""
+    partner_price: Optional[float] = None
+    margin_rate: Optional[float] = None
+    # Caractéristiques de liste
+    duration: str = ""
+    weight: str = ""
+    nb_persons: str = ""
+    partner_name: str = ""
+    partner_code: str = ""
     detail_url: str = ""
     details: Optional[ActivityDetail] = None
 
@@ -205,16 +272,26 @@ class Product:
     code: str = ""
     name: str = ""
     status: str = ""
+    web_status: str = ""
     product_type: str = ""
     reference: str = ""
     model: str = ""
+    collection: str = ""
+    version: str = ""
     publisher: str = ""
     validity_duration: str = ""
     production_year: str = ""
     activities_count: int = 0
+    # Prix
     price: Optional[float] = None
     price_currency: str = "EUR"
     price_country: str = ""
+    prices_by_country: Dict[str, float] = field(default_factory=dict)
+    # Métadonnées supplémentaires de liste
+    universe: str = ""
+    pictogram: str = ""
+    thematics: List[str] = field(default_factory=list)
+    ean_code: str = ""
     detail_url: str = ""
     activities: Optional[List[Activity]] = None
     details: Optional[ProductDetail] = None
