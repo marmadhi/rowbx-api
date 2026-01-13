@@ -91,8 +91,8 @@ class TrustpilotScraper:
                 
                 if reviews:
                     return reviews
-            except:
-                pass
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                logger.debug(f"Parse error: {e}")
                 
         # Approche 2: HTML classes (Fallback)
         # Classes: styles_cardWrapper__..., styles_reviewContent__...

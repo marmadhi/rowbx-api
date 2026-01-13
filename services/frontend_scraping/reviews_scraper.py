@@ -30,14 +30,16 @@ class PublicReviewsScraper(PublicServiceBase):
         total_input = soup.select_one('input.totalNumberOfReviews')
         if total_input:
             try: total = int(total_input.get('value', 0))
-            except: pass
+            except (ValueError, TypeError):
+                    pass
             
         avg_elem = soup.select_one('.reviews-avg')
         if avg_elem:
             match = re.search(r'([\d,]+)/5', avg_elem.get_text())
             if match:
                 try: avg = float(match.group(1).replace(',', '.'))
-                except: pass
+                except (ValueError, TypeError):
+                    pass
                 
         # Reviews Page 1
         reviews.extend(self._parse_reviews(soup))
@@ -83,7 +85,8 @@ class PublicReviewsScraper(PublicServiceBase):
                 try:
                     match = re.search(r'/a/([A-Z0-9]+)', act_link['href'])
                     if match: r.activity_code = match.group(1)
-                except: pass
+                except (ValueError, TypeError):
+                    pass
             
             res.append(r)
         return res

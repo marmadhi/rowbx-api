@@ -68,8 +68,10 @@ class PublicProviderScraper(PublicServiceBase):
         # 4. Reviews summary
         rating_div = soup.find('div', class_='rating')
         if rating_div:
-            try: partner.average_rating = float(rating_div.get('data-rating'))
-            except: pass
+            try:
+                partner.average_rating = float(rating_div.get('data-rating'))
+            except (ValueError, TypeError):
+                pass
             
             count = rating_div.find('span', class_='rating__count')
             if count:
@@ -90,8 +92,8 @@ class PublicProviderScraper(PublicServiceBase):
                         price=float(p.get('price', 0)) if p.get('price') else None
                     )
                     partner.activities.append(act)
-            except:
-                pass
+            except (ValueError, KeyError, TypeError) as e:
+                logger.debug(f"Parse error: {e}")
 
         # 6. Reviews detailed
         reviews, _, _, _ = self.get_partner_reviews(partner_code)
@@ -100,25 +102,62 @@ class PublicProviderScraper(PublicServiceBase):
         return partner
 
     def get_partner_reviews(self, partner_code: str, max_pages: int = 5) -> Tuple[List[PartnerReview], Optional[float], int, Dict[int, int]]:
-        """Récupère les avis"""
+        """Récupère les avis avec pagination complète"""
         self._log_separator(f"PARTNER REVIEWS {partner_code}")
-        
+
         reviews = []
-        url = f"{self.SITE_URL}/p/{partner_code}/reviews"
-        html_content = self._fetch_html(url)
-        
+        avg_rating = None
+        total_reviews = 0
+        rating_distribution = {}
+
+        base_url = f"{self.SITE_URL}/p/{partner_code}/reviews"
+        html_content = self._fetch_html(base_url)
+
         if not html_content:
             return [], None, 0, {}
-            
+
         soup = BeautifulSoup(html_content, 'html.parser')
-        
+
+        # Extract stats from first page
+        total_input = soup.select_one('input.totalNumberOfReviews')
+        if total_input:
+            try:
+                total_reviews = int(total_input.get('value', 0))
+            except (ValueError, TypeError):
+                pass
+
+        avg_elem = soup.select_one('.reviews-avg')
+        if avg_elem:
+            match = re.search(r'([\d,]+)/5', avg_elem.get_text())
+            if match:
+                try:
+                    avg_rating = float(match.group(1).replace(',', '.'))
+                except (ValueError, TypeError):
+                    pass
+
         # Parse first page
         reviews.extend(self._parse_reviews_soup(soup))
-        
-        # Basic pagination logic omitted for brevity, can be added if needed
-        # Just simple first page usually enough for MVP or follow structure
-        
-        return reviews, None, len(reviews), {}
+
+        # Pagination loop
+        page = 2
+        while len(reviews) < total_reviews and page <= max_pages:
+            page_url = f"{base_url}?page={page * 10}"
+            next_html = self._fetch_html(page_url)
+
+            if not next_html:
+                break
+
+            next_soup = BeautifulSoup(next_html, 'html.parser')
+            new_reviews = self._parse_reviews_soup(next_soup)
+
+            if not new_reviews:
+                break
+
+            reviews.extend(new_reviews)
+            page += 1
+            logger.debug(f"Page {page - 1}: {len(new_reviews)} avis récupérés")
+
+        return reviews, avg_rating, total_reviews, rating_distribution
 
     def _parse_reviews_soup(self, soup) -> List[PartnerReview]:
         res = []

@@ -1,8 +1,6 @@
 import logging
 import re
 import time
-import os
-import tempfile
 from typing import List, Tuple, Optional
 from bs4 import BeautifulSoup
 from .base_scraper import BOServiceBase
@@ -194,7 +192,8 @@ class BOActivityScraper(BOServiceBase):
             match = re.search(r'([\d\s,\.]+)\s*€', text)
             if match:
                 try: activity.price = float(match.group(1).replace(' ', '').replace(',', '.'))
-                except: pass
+                except ValueError:
+                        pass
             
             match = re.search(r'\(([^)]+)\)', text)
             if match: activity.price_countries = match.group(1).strip()
@@ -206,13 +205,15 @@ class BOActivityScraper(BOServiceBase):
                 match = re.search(r'([\d\s,\.]+)\s*€', text)
                 if match:
                     try: activity.partner_price = float(match.group(1).replace(' ', '').replace(',', '.'))
-                    except: pass
+                    except ValueError:
+                        pass
             
             if '%' in text:
                 match = re.search(r'([\d,\.]+)\s*%', text)
                 if match:
                     try: activity.margin_rate = float(match.group(1).replace(',', '.'))
-                    except: pass
+                    except ValueError:
+                        pass
 
         # Publisher
         for cell in cells:
@@ -360,4 +361,5 @@ class BOActivityScraper(BOServiceBase):
                 elif 'value' in name and 'price' not in name: detail.pricing.value = fval
                 elif 'partner' in name and 'price' in name: detail.pricing.partner_price = fval
                 elif 'public' in name and 'price' in name: detail.pricing.public_price = fval
-            except: pass
+            except ValueError:
+                        pass

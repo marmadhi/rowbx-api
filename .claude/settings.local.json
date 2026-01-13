@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nRefactor: improve code quality and robustness\n\n- Add common/config.py with centralized configuration\n  - Environment variables for URLs \\(WONDERBOX_BO_URL, etc.\\)\n  - Configurable timeouts and retry settings\n  - retry_on_failure decorator with exponential backoff\n  - rate_limited decorator for request throttling\n\n- Fix exception handling across all scrapers\n  - Replace bare except clauses with specific exception types\n  - Add proper logging for parse errors\n\n- Improve frontend scrapers\n  - Add retry logic to base_public_scraper\n  - Implement full pagination for partner reviews\n  - Use configuration constants for URLs and timeouts\n\n- Security improvements\n  - Remove hardcoded default username from app.py\n  - Move all URLs to environment-configurable settings\n\n- Code cleanup\n  - Remove unused imports \\(os, tempfile\\)\n  - Fix indentation issues in exception handlers\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  }
+}

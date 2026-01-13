@@ -2,13 +2,19 @@ import requests
 import logging
 import re
 from typing import Optional, Dict, Tuple, List
+from requests.exceptions import RequestException, Timeout, ConnectionError
 
-# Logger
+from common.config import (
+    BO_BASE_URL, DEFAULT_TIMEOUT, LOGIN_TIMEOUT,
+    retry_on_failure, MAX_RETRIES
+)
+
 logger = logging.getLogger("BOScraper")
 
+
 class BOServiceBase:
-    BASE_URL = "http://rowbx2.wonderbox.vpn"
-    
+    BASE_URL = BO_BASE_URL
+
     def __init__(self, cookies: Dict[str, str] = None, session: requests.Session = None):
         self.session = session or requests.Session()
         self.session.headers.update({
@@ -18,41 +24,37 @@ class BOServiceBase:
         })
         if cookies:
             self.session.cookies.update(cookies)
-    
+
     def _log_separator(self, title: str = ""):
         """Affiche un séparateur dans les logs"""
         if title:
             logger.info("=" * 60)
             logger.info(f"  {title}")
             logger.info("=" * 60)
-    
+
+    @retry_on_failure(max_retries=MAX_RETRIES, exceptions=(RequestException, Timeout, ConnectionError))
     def _fetch_page(self, url: str, description: str = "") -> Optional[str]:
-        """Récupère une page avec logging"""
+        """Récupère une page avec logging et retry automatique"""
         logger.debug(f"[FETCH] {description}")
-        
-        try:
-            resp = self.session.get(url, timeout=30)
-            
-            if resp.status_code != 200:
-                logger.error(f"[FETCH] ❌ Erreur HTTP {resp.status_code}")
-                return None
-            
-            # Vérifier si redirection vers login
-            if 'auth/login' in resp.url:
-                logger.error(f"[FETCH] ❌ Redirection vers login détectée!")
-                return None
-            
-            # Vérifier le contenu pour détecter une page de login cachée
-            if 'name="username"' in resp.text and 'name="password"' in resp.text:
-                logger.error(f"[FETCH] ❌ Page de login détectée dans le contenu!")
-                return None
-            
-            return resp.text
-            
-        except Exception as e:
-            logger.error(f"[FETCH] ❌ Exception: {e}")
+
+        resp = self.session.get(url, timeout=DEFAULT_TIMEOUT)
+
+        if resp.status_code != 200:
+            logger.error(f"[FETCH] Erreur HTTP {resp.status_code}")
             return None
-    
+
+        # Vérifier si redirection vers login
+        if 'auth/login' in resp.url:
+            logger.error("[FETCH] Redirection vers login détectée!")
+            return None
+
+        # Vérifier le contenu pour détecter une page de login cachée
+        if 'name="username"' in resp.text and 'name="password"' in resp.text:
+            logger.error("[FETCH] Page de login détectée dans le contenu!")
+            return None
+
+        return resp.text
+
     def login(self, username: str, password: str) -> bool:
         """Connexion au site via l'API JSON"""
         self._log_separator("LOGIN")
@@ -60,65 +62,71 @@ class BOServiceBase:
 
         try:
             data = {'login': username, 'password': password}
-            resp = self.session.post(login_url, data=data, allow_redirects=True)
+            resp = self.session.post(login_url, data=data, allow_redirects=True, timeout=LOGIN_TIMEOUT)
 
             if resp.status_code == 200:
                 is_connected, msg = self.test_connection()
                 if is_connected:
-                    logger.info(f"Login: ✅ Succès - {msg}")
+                    logger.info(f"Login: Succès - {msg}")
                     return True
 
-            logger.warning("Login: ❌ Échec")
+            logger.warning("Login: Échec")
             return False
-        except Exception as e:
-            logger.error(f"Login exception: {e}")
+        except (RequestException, Timeout, ConnectionError) as e:
+            logger.error(f"Login exception réseau: {e}")
             return False
-    
+        except ValueError as e:
+            logger.error(f"Login erreur de données: {e}")
+            return False
+
     def _build_filter_url_parts(self, filters: Dict) -> List[str]:
         """Construit les segments d'URL à partir des filtres (Helper générique)"""
         parts = []
         for key, value in filters.items():
-            if value is None or value == "": continue
-                
+            if value is None or value == "":
+                continue
+
             # Handle Lists (Checkbox arrays)
             if isinstance(value, list):
                 clean_values = [str(v) for v in value if v]
                 if clean_values:
                     parts.append(f"{key}/{','.join(clean_values)}")
-            
+
             # Handle Booleans
             elif isinstance(value, bool):
                 parts.append(f"{key}/{'1' if value else '0'}")
-                
+
             # Handle Simple Values
             else:
                 parts.append(f"{key}/{value}")
-                
+
         return parts
 
     def test_connection(self) -> Tuple[bool, str]:
         """Teste la connexion"""
         try:
-            resp = self.session.get(f"{self.BASE_URL}/search/box", timeout=10)
-            
+            resp = self.session.get(f"{self.BASE_URL}/search/box", timeout=LOGIN_TIMEOUT)
+
             if resp.status_code == 200:
                 if 'auth' in resp.url.lower() and 'login' in resp.url.lower():
                     return False, "Session expirée"
-                
+
                 if 'name="username"' in resp.text and 'name="password"' in resp.text:
                     return False, "Session expirée"
-                
+
                 if 'logout' in resp.text.lower():
                     match = re.search(r'info-login-name[^>]*>([^<]+)<', resp.text)
                     username = match.group(1).strip() if match else "inconnu"
                     return True, f"Connecté ({username})"
-                
+
                 if 'box-result' in resp.text or 'search/box' in resp.text:
                     return True, "Page accessible"
-                
+
                 return False, "Session invalide"
-            
+
             return False, f"Erreur HTTP {resp.status_code}"
-            
-        except Exception as e:
-            return False, str(e)
+
+        except (RequestException, Timeout, ConnectionError) as e:
+            return False, f"Erreur réseau: {e}"
+        except ValueError as e:
+            return False, f"Erreur données: {e}"

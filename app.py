@@ -129,7 +129,7 @@ def main():
             )
             
             st.subheader("Connexion")
-            username = st.text_input("Login", value="m.maroufi")
+            username = st.text_input("Login", placeholder="Votre login")
             password = st.text_input("Password", type="password")
             
             if "bo_scraper_box" not in st.session_state:
@@ -293,7 +293,7 @@ def main():
                 if json_input.strip():
                     try:
                         filters.update(json.loads(json_input))
-                    except:
+                    except json.JSONDecodeError:
                         st.error("JSON Invalide")
 
             elif bo_mode == "Prestataires":
@@ -323,7 +323,7 @@ def main():
                 if json_input.strip():
                     try:
                         filters.update(json.loads(json_input))
-                    except:
+                    except json.JSONDecodeError:
                         st.error("JSON Invalide")
 
             # --- ACTION ---

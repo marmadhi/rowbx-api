@@ -1,8 +1,6 @@
 import logging
 import re
 import time
-import os
-import tempfile
 from typing import List, Tuple, Optional
 from bs4 import BeautifulSoup
 from .base_scraper import BOServiceBase
@@ -184,8 +182,8 @@ class BOBoxScraper(BOServiceBase):
         if match:
             try:
                 product.price = float(match.group(1).replace(' ', '').replace(',', '.'))
-            except:
-                pass
+            except ValueError:
+                    logger.debug("Parse error")
 
         # EAN
         for cell in cells:
@@ -283,8 +281,8 @@ class BOBoxScraper(BOServiceBase):
                 try:
                     detail.price = float(val.replace(',', '.').replace(' ', ''))
                     break
-                except:
-                    pass
+                except ValueError:
+                    logger.debug("Parse error")
 
         # Images & Descriptions
         self._extract_images(soup, html, detail)
