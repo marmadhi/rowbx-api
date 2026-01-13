@@ -86,22 +86,42 @@ class WonderboxScraper:
             return None
     
     def login(self, username: str, password: str) -> bool:
-        """Connexion au site"""
+        """Connexion au site via l'API JSON"""
         self._log_separator("LOGIN")
-        login_url = f"{self.BASE_URL}/auth/login"
-        
+        login_url = f"{self.BASE_URL}/json/auth/adminauth"
+
         try:
-            resp = self.session.get(login_url)
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            csrf_input = soup.find('input', {'name': re.compile(r'csrf|_token', re.I)})
-            csrf_token = csrf_input.get('value') if csrf_input else ''
-            
-            data = {'username': username, 'password': password, '_token': csrf_token}
+            # Le formulaire Rowbx utilise 'login' et 'password'
+            data = {'login': username, 'password': password}
+
+            # POST en JSON vers l'API d'authentification
             resp = self.session.post(login_url, data=data, allow_redirects=True)
-            
-            success = 'logout' in resp.text.lower()
-            logger.info(f"Login: {'✅ Succès' if success else '❌ Échec'}")
-            return success
+            logger.debug(f"Login response status: {resp.status_code}")
+            logger.debug(f"Login response URL: {resp.url}")
+
+            # Vérifier la réponse JSON si possible
+            try:
+                json_resp = resp.json()
+                logger.debug(f"Login JSON response: {json_resp}")
+                # Si la réponse contient une erreur ou un statut d'échec
+                if json_resp.get('error') or json_resp.get('success') == False:
+                    logger.warning(f"Login échoué: {json_resp.get('message', 'Erreur inconnue')}")
+                    return False
+            except ValueError:
+                # Pas de JSON, vérifier le HTML
+                pass
+
+            # Vérifier si on est redirigé vers une page authentifiée
+            # ou si la session contient un cookie de session valide
+            if resp.status_code == 200:
+                # Tester la connexion pour confirmer
+                is_connected, msg = self.test_connection()
+                if is_connected:
+                    logger.info(f"Login: ✅ Succès - {msg}")
+                    return True
+
+            logger.warning("Login: ❌ Échec - session non établie")
+            return False
         except Exception as e:
             logger.error(f"Login exception: {e}")
             return False
@@ -370,9 +390,50 @@ class WonderboxScraper:
         return all_products
     
     # ========================================================================
+    # RECHERCHE PRODUIT PAR CODE
+    # ========================================================================
+
+    def get_product_by_code(self, code: str, publisher: str = "FRANCE") -> Optional[Product]:
+        """Recherche un produit par son code (ex: B33O01)"""
+        self._log_separator(f"RECHERCHE PRODUIT PAR CODE: {code}")
+
+        # URL de recherche avec filtre par code
+        url = f"{self.BASE_URL}/search/box/box_code/{code}"
+        if publisher:
+            url += f"/publisher/{publisher}/page/1"
+
+        html = self._fetch_page(url, f"Recherche produit code={code}")
+        if not html:
+            return None
+
+        products, total, _ = self._parse_search_results(html)
+
+        if products:
+            # Trouver le produit exact
+            for p in products:
+                if p.code == code:
+                    logger.info(f"✅ Produit trouvé: {p.code} (ID={p.id})")
+                    return p
+
+            # Si pas de match exact, retourner le premier
+            logger.info(f"✅ Produit trouvé (premier résultat): {products[0].code} (ID={products[0].id})")
+            return products[0]
+
+        logger.warning(f"❌ Aucun produit trouvé pour code={code}")
+        return None
+
+    def get_product_detail_by_code(self, code: str, publisher: str = "FRANCE",
+                                    fetch_all_tabs: bool = True) -> Optional[ProductDetail]:
+        """Récupère les détails complets d'un produit à partir de son code"""
+        product = self.get_product_by_code(code, publisher)
+        if product and product.id:
+            return self.get_product_detail(product.id, fetch_all_tabs)
+        return None
+
+    # ========================================================================
     # DÉTAILS PRODUIT
     # ========================================================================
-    
+
     def get_product_detail(self, product_id: int, fetch_all_tabs: bool = True) -> Optional[ProductDetail]:
         """Récupère les détails complets d'un produit"""
         self._log_separator(f"DÉTAILS PRODUIT ID={product_id}")
@@ -514,50 +575,163 @@ class WonderboxScraper:
 
         # ========== IMAGES ==========
         # Chercher toutes les images du produit
+        def normalize_url(url: str) -> str:
+            """Normalise l'URL d'une image"""
+            if not url:
+                return ""
+            if url.startswith('//'):
+                return f"https:{url}"
+            if url.startswith('/'):
+                return f"{self.BASE_URL}{url}"
+            return url if url.startswith('http') else ""
+
+        # 1. Chercher les inputs/liens contenant des URLs d'images
+        for inp in soup.find_all(['input', 'a']):
+            val = inp.get('value', '') or inp.get('href', '') or inp.get('data-url', '')
+            name = (inp.get('name', '') or inp.get('id', '') or inp.get('class', [''])[0] if isinstance(inp.get('class'), list) else inp.get('class', '')).lower()
+
+            if not val or 'placeholder' in val.lower():
+                continue
+
+            val = normalize_url(val)
+            if not val:
+                continue
+
+            # Classer selon le nom du champ ou du lien
+            name_lower = name.lower()
+            val_lower = val.lower()
+
+            if 'edito' in name_lower or 'edito' in val_lower:
+                if not detail.images.edito:
+                    detail.images.edito = val
+            elif 'facing' in name_lower or 'facing' in val_lower or '2d' in name_lower:
+                if not detail.images.facing_2d:
+                    detail.images.facing_2d = val
+            elif 'simul' in name_lower or 'simul' in val_lower or '3d' in name_lower:
+                if not detail.images.simul_3d:
+                    detail.images.simul_3d = val
+            elif 'landscape' in name_lower or 'landscape' in val_lower or 'paysage' in name_lower:
+                if not detail.images.landscape:
+                    detail.images.landscape = val
+            elif 'lengow' in name_lower or 'lengow' in val_lower:
+                if not detail.images.lengow:
+                    detail.images.lengow = val
+            elif 'back' in name_lower or 'verso' in name_lower or 'backcard' in val_lower:
+                if not detail.images.back_card:
+                    detail.images.back_card = val
+            elif 'squared' in name_lower or 'squared' in val_lower or 'carre' in name_lower:
+                if not detail.images.squared:
+                    detail.images.squared = val
+            elif 'header' in name_lower or 'header' in val_lower:
+                if val not in detail.images.header:
+                    detail.images.header.append(val)
+
+        # 2. Chercher dans les balises img
         for img in soup.find_all('img'):
-            src = img.get('src', '')
+            src = img.get('src', '') or img.get('data-src', '')
             alt = img.get('alt', '').lower()
+            parent = img.parent
+            parent_id = parent.get('id', '').lower() if parent else ''
+            parent_class = ' '.join(parent.get('class', [])).lower() if parent else ''
 
-            if not src or 'placeholder' in src.lower():
+            if not src or 'placeholder' in src.lower() or 'icon' in src.lower():
                 continue
 
-            # Construire URL complète si relative
-            if src.startswith('/'):
-                src = f"{self.BASE_URL}{src}"
-            elif not src.startswith('http'):
+            src = normalize_url(src)
+            if not src:
                 continue
 
-            # Classer l'image selon son type
-            if 'edito' in src.lower() or 'edito' in alt:
+            # Classer selon src, alt, ou contexte parent
+            context = f"{src} {alt} {parent_id} {parent_class}".lower()
+
+            if 'edito' in context and not detail.images.edito:
                 detail.images.edito = src
-            elif 'facing' in src.lower() or '2d' in alt:
+            elif ('facing' in context or '2d' in context) and not detail.images.facing_2d:
                 detail.images.facing_2d = src
-            elif 'simul' in src.lower() or '3d' in alt:
+            elif ('simul' in context or '3d' in context) and not detail.images.simul_3d:
                 detail.images.simul_3d = src
-            elif 'landscape' in src.lower() or 'paysage' in alt:
+            elif ('landscape' in context or 'paysage' in context) and not detail.images.landscape:
                 detail.images.landscape = src
-            elif 'lengow' in src.lower():
+            elif 'lengow' in context and not detail.images.lengow:
                 detail.images.lengow = src
-            elif 'back' in src.lower() or 'verso' in alt:
+            elif ('back' in context or 'verso' in context) and not detail.images.back_card:
                 detail.images.back_card = src
-            elif 'squared' in src.lower() or 'carre' in alt:
+            elif ('squared' in context or 'carre' in context) and not detail.images.squared:
                 detail.images.squared = src
-            elif 'header' in src.lower():
+            elif 'header' in context and src not in detail.images.header:
                 detail.images.header.append(src)
 
-        # Chercher aussi dans les liens d'images
+        # 3. Chercher les URLs d'images dans le HTML brut (pattern CDN)
+        # Format typique: https://cdn.wonderbox.fr/images/produits/CODE/edito.jpg
+        cdn_patterns = [
+            (r'https?://[^"\'>\s]+/edito[^"\'>\s]*\.(jpg|jpeg|png|gif|webp)', 'edito'),
+            (r'https?://[^"\'>\s]+/facing[^"\'>\s]*\.(jpg|jpeg|png|gif|webp)', 'facing_2d'),
+            (r'https?://[^"\'>\s]+/simul[^"\'>\s]*\.(jpg|jpeg|png|gif|webp)', 'simul_3d'),
+            (r'https?://[^"\'>\s]+/landscape[^"\'>\s]*\.(jpg|jpeg|png|gif|webp)', 'landscape'),
+            (r'https?://[^"\'>\s]+/lengow[^"\'>\s]*\.(jpg|jpeg|png|gif|webp)', 'lengow'),
+            (r'https?://[^"\'>\s]+/back[^"\'>\s]*\.(jpg|jpeg|png|gif|webp)', 'back_card'),
+            (r'https?://[^"\'>\s]+/squared[^"\'>\s]*\.(jpg|jpeg|png|gif|webp)', 'squared'),
+            (r'https?://[^"\'>\s]+/header[^"\'>\s]*\.(jpg|jpeg|png|gif|webp)', 'header'),
+        ]
+
+        for pattern, img_type in cdn_patterns:
+            matches = re.findall(pattern, html, re.I)
+            for match in matches:
+                # match est un tuple si le pattern a des groupes
+                url = match[0] if isinstance(match, tuple) else match
+                if not url.startswith('http'):
+                    # Reconstruire l'URL complète
+                    full_match = re.search(pattern, html, re.I)
+                    if full_match:
+                        url = full_match.group(0)
+
+                if img_type == 'header':
+                    if url not in detail.images.header:
+                        detail.images.header.append(url)
+                elif img_type == 'edito' and not detail.images.edito:
+                    detail.images.edito = url
+                elif img_type == 'facing_2d' and not detail.images.facing_2d:
+                    detail.images.facing_2d = url
+                elif img_type == 'simul_3d' and not detail.images.simul_3d:
+                    detail.images.simul_3d = url
+                elif img_type == 'landscape' and not detail.images.landscape:
+                    detail.images.landscape = url
+                elif img_type == 'lengow' and not detail.images.lengow:
+                    detail.images.lengow = url
+                elif img_type == 'back_card' and not detail.images.back_card:
+                    detail.images.back_card = url
+                elif img_type == 'squared' and not detail.images.squared:
+                    detail.images.squared = url
+
+        # 4. Chercher les liens vers les images (téléchargement)
         for a in soup.find_all('a', href=re.compile(r'\.(jpg|jpeg|png|gif|webp)', re.I)):
             href = a.get('href', '')
-            if href.startswith('/'):
-                href = f"{self.BASE_URL}{href}"
+            href = normalize_url(href)
+            if not href:
+                continue
 
             link_text = a.get_text(strip=True).lower()
-            if 'edito' in link_text and not detail.images.edito:
-                detail.images.edito = href
-            elif 'facing' in link_text and not detail.images.facing_2d:
-                detail.images.facing_2d = href
+            href_lower = href.lower()
 
-        logger.debug(f"[PARSE] Images: edito={bool(detail.images.edito)}, facing={bool(detail.images.facing_2d)}")
+            if ('edito' in link_text or 'edito' in href_lower) and not detail.images.edito:
+                detail.images.edito = href
+            elif ('facing' in link_text or 'facing' in href_lower) and not detail.images.facing_2d:
+                detail.images.facing_2d = href
+            elif ('simul' in link_text or 'simul' in href_lower) and not detail.images.simul_3d:
+                detail.images.simul_3d = href
+            elif ('landscape' in link_text or 'landscape' in href_lower) and not detail.images.landscape:
+                detail.images.landscape = href
+            elif ('lengow' in link_text or 'lengow' in href_lower) and not detail.images.lengow:
+                detail.images.lengow = href
+            elif ('back' in link_text or 'back' in href_lower) and not detail.images.back_card:
+                detail.images.back_card = href
+            elif ('squared' in link_text or 'squared' in href_lower) and not detail.images.squared:
+                detail.images.squared = href
+            elif 'header' in link_text or 'header' in href_lower:
+                if href not in detail.images.header:
+                    detail.images.header.append(href)
+
+        logger.debug(f"[PARSE] Images: edito={bool(detail.images.edito)}, facing_2d={bool(detail.images.facing_2d)}, simul_3d={bool(detail.images.simul_3d)}, landscape={bool(detail.images.landscape)}, lengow={bool(detail.images.lengow)}, back_card={bool(detail.images.back_card)}, squared={bool(detail.images.squared)}, header={len(detail.images.header)}")
 
         # ========== DESCRIPTIONS ==========
         textareas = soup.find_all('textarea')
@@ -575,33 +749,48 @@ class WonderboxScraper:
             content_clean = re.sub(r'<[^>]+>', ' ', content)
             content_clean = re.sub(r'\s+', ' ', content_clean).strip()
 
-            # Langue
-            lang_match = re.search(r'_([a-z]{2}(?:_[A-Z]{2})?)$', ta_id)
+            # Langue - chercher aussi le format _fr, _en, etc.
+            lang_match = re.search(r'[_\-]([a-z]{2})(?:_[A-Z]{2})?$', ta_id)
             lang = lang_match.group(1) if lang_match else 'fr'
 
+            ta_id_lower = ta_id.lower()
+
             # Mapper les textareas aux descriptions
-            if 'targetDescription' in ta_id:
+            if 'targetdescription' in ta_id_lower:
                 detail.descriptions.target_description[lang] = content_clean
                 if lang == 'fr' and content_clean:
                     bullet_points.append(content_clean)
-            elif 'programDescription' in ta_id:
+            elif 'programdescription' in ta_id_lower:
                 detail.descriptions.program_description[lang] = content_clean
                 if lang == 'fr' and content_clean:
                     bullet_points.append(content_clean)
-            elif 'shortDescription' in ta_id:
+            elif 'shortdescription' in ta_id_lower:
                 detail.descriptions.short_description[lang] = content_clean
-            elif 'extraDescription' in ta_id or 'fullDescription' in ta_id:
+            elif 'extradescription' in ta_id_lower or 'fulldescription' in ta_id_lower:
                 detail.descriptions.full_description[lang] = content_clean
-            elif 'catchPhrase' in ta_id:
+            elif 'catchphrase' in ta_id_lower:
                 detail.descriptions.catch_phrase[lang] = content_clean
-            elif 'videoLink' in ta_id:
+            elif 'videolink' in ta_id_lower:
                 detail.descriptions.video_link[lang] = content_clean
-            elif 'whyYouWillLoveIt' in ta_id:
+            elif 'whyyouwillloveit' in ta_id_lower or 'whyyouwilllove' in ta_id_lower:
                 detail.descriptions.why_you_will_love[lang] = content_clean
-            elif 'presentation_title' in ta_id or 'presentationTitle' in ta_id:
+            elif 'presentation_title' in ta_id_lower or 'presentationtitle' in ta_id_lower:
                 detail.descriptions.title[lang] = content_clean
+                logger.debug(f"[PARSE] Presentation title ({lang}): {content_clean[:50]}...")
+
+        # Chercher aussi dans les inputs pour presentation_title
+        for inp in soup.find_all('input'):
+            inp_name = inp.get('name', inp.get('id', '')).lower()
+            val = inp.get('value', '')
+            if val and ('presentation_title' in inp_name or 'presentationtitle' in inp_name):
+                lang_match = re.search(r'[_\-]([a-z]{2})(?:_[A-Z]{2})?$', inp_name)
+                lang = lang_match.group(1) if lang_match else 'fr'
+                if lang not in detail.descriptions.title:
+                    detail.descriptions.title[lang] = val
+                    logger.debug(f"[PARSE] Presentation title from input ({lang}): {val[:50]}...")
 
         detail.descriptions.bullet_points = bullet_points[:4]
+        logger.debug(f"[PARSE] Descriptions title: {list(detail.descriptions.title.keys())}")
 
         # ========== MATÉRIALISATIONS ==========
         mat_table = soup.find('table', class_='box-materializations')
@@ -685,13 +874,50 @@ class WonderboxScraper:
                     detail.characteristics.tags.append(tag_name)
 
         # ========== ACTIVITÉS FAVORITES ==========
-        for cb in soup.find_all('input', {'name': re.compile(r'favorite|activity', re.I)}):
-            if cb.get('checked'):
+        # Chercher les checkboxes favoriteActivity, favorite_activity, boxFavoriteActivity, etc.
+        favorite_patterns = [
+            r'favorite.*activit',
+            r'favoriteactivit',
+            r'boxfavoriteactivit',
+            r'box_favorite_activit',
+            r'activit.*favorite',
+            r'prestation.*favorite',
+            r'favorite.*prestation',
+        ]
+        for cb in soup.find_all('input', type='checkbox'):
+            cb_name = cb.get('name', cb.get('id', '')).lower()
+
+            # Vérifier si le nom correspond à un pattern de favorite activity
+            is_favorite = any(re.search(p, cb_name) for p in favorite_patterns)
+
+            if is_favorite and cb.get('checked'):
                 value = cb.get('value', '')
+                # Chercher le label associé
                 label = cb.find_next('label')
-                activity_name = label.get_text(strip=True) if label else value
+                if label:
+                    activity_name = label.get_text(strip=True)
+                else:
+                    # Chercher dans le parent
+                    parent = cb.parent
+                    if parent:
+                        # Enlever le texte de l'input du texte parent
+                        activity_name = parent.get_text(strip=True)
+                    else:
+                        activity_name = value
+
                 if activity_name and activity_name not in detail.characteristics.favorite_activities:
                     detail.characteristics.favorite_activities.append(activity_name)
+                    logger.debug(f"[PARSE] Favorite activity: {activity_name}")
+
+        # Chercher aussi dans les selects multi-values
+        for select in soup.find_all('select', {'name': re.compile(r'favorite.*activit|activit.*favorite', re.I)}):
+            for option in select.find_all('option', selected=True):
+                val = option.get_text(strip=True)
+                if val and val not in ['--', '', 'Sélectionner'] and val not in detail.characteristics.favorite_activities:
+                    detail.characteristics.favorite_activities.append(val)
+                    logger.debug(f"[PARSE] Favorite activity (select): {val}")
+
+        logger.debug(f"[PARSE] Total favorite activities: {len(detail.characteristics.favorite_activities)}")
 
         # ========== WEIGHT (POIDS) ==========
         weight_inputs = soup.find_all('input', {'name': re.compile(r'weight|poids', re.I)})

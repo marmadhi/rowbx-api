@@ -1,0 +1,1 @@
+from .trustpilot_scraper import TrustpilotScraper
