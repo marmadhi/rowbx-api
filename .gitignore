@@ -41,9 +41,12 @@ Thumbs.db
 .streamlit/
 
 # Debug files
-*.html
+debug_*.py
+debug_*.json
 debug_*.html
+*.html
 /tmp/
+tmpclaude-*
 
 # Logs
 *.log
@@ -51,8 +54,3 @@ debug_*.html
 # Environment variables
 .env
 .env.local
-
-
-
-
-

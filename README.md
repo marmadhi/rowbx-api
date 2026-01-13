@@ -1,26 +1,40 @@
-# 🎁 Wonderbox Scraper
+# Wonderbox Scraper API
 
-Application Streamlit pour scraper les produits et activités Wonderbox depuis Rowbx.
+Application Streamlit pour scraper les produits et activités Wonderbox depuis le backoffice (Rowbx) et le site public.
 
-## 📁 Structure
+## Structure
 
 ```
-wonderbox_scraper/
-├── app.py           # Interface Streamlit
-├── scraper.py       # Classe WonderboxScraper avec logs
-├── models.py        # Dataclasses (Product, Activity, etc.)
+rowbx-api/
+├── app.py                    # Interface Streamlit principale
+├── common/
+│   └── models.py             # Dataclasses partagées
+├── services/
+│   ├── bo_scraping/          # Scrapers backoffice (VPN requis)
+│   │   ├── base_scraper.py
+│   │   ├── box_scraper.py
+│   │   ├── activity_scraper.py
+│   │   └── provider_scraper.py
+│   ├── frontend_scraping/    # Scrapers site public
+│   │   ├── base_public_scraper.py
+│   │   ├── category_scraper.py
+│   │   ├── product_scraper.py
+│   │   ├── provider_scraper.py
+│   │   ├── activity_scraper.py
+│   │   └── reviews_scraper.py
+│   └── trustpilot_scraping/  # Scraper Trustpilot
+│       └── trustpilot_scraper.py
 ├── requirements.txt
 └── README.md
 ```
 
-## 🚀 Installation
+## Installation
 
 ```bash
-cd wonderbox_scraper
 pip install -r requirements.txt
 ```
 
-## ▶️ Lancement
+## Lancement
 
 ```bash
 streamlit run app.py
@@ -28,57 +42,51 @@ streamlit run app.py
 
 Ouvre http://localhost:8501
 
-## 🔐 Authentification
+## Fonctionnalités
 
-1. Connecte-toi à `http://rowbx2.wonderbox.vpn` (VPN actif)
-2. F12 → Application → Cookies
-3. Copie `PHPSESSID`
-4. Colle dans l'app
+### Onglet 1 : Frontend Scraping (Public)
+Scrape le site public wonderbox.fr sans authentification :
+- **Catégorie** : Liste des produits d'une catégorie
+- **Page Produit** : Activités d'un coffret
+- **Page Partenaire** : Détails d'un prestataire
+- **Page Activité** : Détails d'une activité
+- **Avis Partenaire** : Avis clients d'un partenaire
 
-## 📊 Fonctionnalités
+### Onglet 2 : Backoffice Scraping (VPN requis)
+Scrape le backoffice Rowbx (nécessite VPN + login) :
+- **Produits (Box)** : Recherche avec filtres (status, éditeur, univers)
+- **Activités** : Recherche avec filtres (code, ville, thème)
+- **Prestataires** : Recherche avec filtres (code, nom, statut)
 
-### Lookup individuel
-- Recherche un **produit** par ID (ex: 32953)
-- Recherche une **activité** par ID (ex: 529215)
-- Affiche tous les détails avec onglets
+### Onglet 3 : Trustpilot
+Scrape les avis Trustpilot par domaine.
 
-### Recherche en masse
-- Scrape tous les produits par éditeur/statut
-- Options : détails produits, activités, détails activités
-- Export JSON et CSV
+## Export
 
-## 🐛 Debug
+Tous les résultats peuvent être exportés en JSON et CSV.
 
-Les logs s'affichent dans le terminal avec niveau DEBUG.
+## Authentification Backoffice
 
-Fichiers HTML sauvegardés dans `/tmp/` :
-- `debug_product_{id}_tab1.html`
-- `debug_activity_{id}_tab1.html`
+1. Connecte-toi au VPN Wonderbox
+2. Entre ton login/mot de passe dans l'onglet BO
+3. L'application gère la session automatiquement
 
-## 📦 Structure des données
+## Structure des données
 
-### ProductDetail
-```
-├── id, code, name, model, collection, version
-├── descriptions
-│   ├── title, catch_phrase, bullet_points
-│   ├── short_description, full_description
-│   └── target_description, program_description
-├── characteristics
-│   └── tags, durations, meta_title/keywords/description
-├── merchandising
-│   └── product_type, universe, pictogram, thematics, targets
-├── materializations[]
-│   └── type, code, ean, dlu, available
-└── ean_codes[]
-```
+### Product (BO)
+- id, code, name, status
+- descriptions, characteristics, merchandising
+- materializations, ean_codes
 
-### ActivityDetail
-```
-├── id, code, name, status
-├── location
-│   └── id, name, address, city, country
-├── characteristics
-│   └── duration, weight, age_brackets, hotel_service
-└── pricing
-```
+### Activity (BO)
+- id, code, name, status
+- location (address, city, country)
+- characteristics (duration, pricing)
+
+### PublicProduct (Frontend)
+- code, name, price, images
+- ratings, categories, thematics
+
+### PublicPartner (Frontend)
+- code, name, address, contact
+- rating, reviews, activities
