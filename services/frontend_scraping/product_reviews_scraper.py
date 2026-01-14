@@ -27,27 +27,32 @@ class ProductBoxScraper(PublicServiceBase):
         Extrait le code produit depuis une URL ou le retourne directement.
 
         Supporte:
-        - Code direct: BZZN01
+        - Code direct: BZZN01, A39H01
         - URL produit: https://www.wonderbox.fr/pour-un-couple-extra/b/BZZN01
-        - URL avec slug: https://www.wonderbox.fr/pour-un-couple-extra
+        - URL avec slug: https://www.wonderbox.fr/b/pour-un-couple-extra
         """
-        # Si c'est déjà un code (format: lettres+chiffres, 4-8 chars)
-        if re.match(r'^[A-Z0-9]{4,8}$', url_or_code.upper()):
-            return url_or_code.upper()
+        url_or_code = url_or_code.strip()
 
-        # Extraction depuis URL avec /b/CODE
-        match = re.search(r'/b/([A-Z0-9]+)', url_or_code, re.I)
+        # Si c'est déjà un code Wonderbox (format: lettres + chiffres, ex: BZZN01, A39H01)
+        # Le code doit contenir au moins une lettre ET au moins un chiffre
+        if re.match(r'^[A-Z0-9]{4,8}$', url_or_code.upper()):
+            # Vérifier qu'il contient bien des chiffres (pas juste des lettres comme "POUR")
+            if re.search(r'\d', url_or_code):
+                return url_or_code.upper()
+
+        # Extraction depuis URL avec /b/CODE (code alphanumérique avec chiffres)
+        match = re.search(r'/b/([A-Z]+\d+[A-Z0-9]*)', url_or_code, re.I)
         if match:
             return match.group(1).upper()
 
-        # Si c'est une URL sans code explicite, on doit scraper la page
+        # Si c'est une URL Wonderbox, scraper la page pour trouver le code
         if 'wonderbox.fr' in url_or_code:
             return self._extract_code_from_page(url_or_code)
 
         return None
 
     def _extract_code_from_page(self, url: str) -> Optional[str]:
-        """Extrait le code produit depuis le HTML de la page (bouton addToCart)"""
+        """Extrait le code produit depuis le HTML de la page"""
         self._log_separator(f"EXTRACT CODE FROM {url}")
 
         html_content = self._fetch_html(url)
@@ -56,36 +61,55 @@ class ProductBoxScraper(PublicServiceBase):
 
         soup = BeautifulSoup(html_content, 'html.parser')
 
-        # Méthode 1: Bouton addToCart avec data-config
+        # Méthode 1: Input caché productCodePost (le plus fiable)
+        product_code_input = soup.find('input', {'name': 'productCodePost'})
+        if product_code_input:
+            code = product_code_input.get('value', '').strip()
+            if code:
+                logger.debug(f"Code extrait via productCodePost: {code}")
+                return code.upper()
+
+        # Méthode 2: Bouton addToCart avec data-config
         add_to_cart = soup.find('button', {'id': 'addToCartButton'})
         if add_to_cart:
             data_config = add_to_cart.get('data-config', '')
             if data_config:
                 try:
-                    # Décoder les entités HTML
                     decoded = html_module.unescape(data_config)
                     config = json.loads(decoded)
                     products = config.get('ecommerce', {}).get('add', {}).get('products', [])
                     if products:
-                        return products[0].get('id', '')
+                        code = products[0].get('id', '')
+                        if code:
+                            logger.debug(f"Code extrait via addToCart: {code}")
+                            return code.upper()
                 except (json.JSONDecodeError, KeyError, TypeError) as e:
                     logger.debug(f"Erreur parsing data-config: {e}")
 
-        # Méthode 2: Script GTM
+        # Méthode 3: Script GTM wbx_gtm_productDetail
         for script in soup.find_all('script'):
             if script.string and 'wbx_gtm_productDetail' in script.string:
                 match = re.search(r'"id"\s*:\s*"([A-Z0-9]+)"', script.string)
                 if match:
-                    return match.group(1)
+                    logger.debug(f"Code extrait via GTM: {match.group(1)}")
+                    return match.group(1).upper()
 
-        # Méthode 3: URL canonique
+        # Méthode 4: URL canonique avec /b/CODE
         canonical = soup.find('link', {'rel': 'canonical'})
         if canonical:
             href = canonical.get('href', '')
             match = re.search(r'/b/([A-Z0-9]+)', href, re.I)
             if match:
+                logger.debug(f"Code extrait via canonical: {match.group(1)}")
                 return match.group(1).upper()
 
+        # Méthode 5: Regex dans le HTML brut pour productCode
+        match = re.search(r'productCode["\']?\s*[:=]\s*["\']([A-Z0-9]{4,8})["\']', html_content, re.I)
+        if match:
+            logger.debug(f"Code extrait via regex: {match.group(1)}")
+            return match.group(1).upper()
+
+        logger.warning(f"Impossible d'extraire le code produit depuis {url}")
         return None
 
     def get_product_info(self, url_or_code: str) -> Optional[ProductInfo]:
