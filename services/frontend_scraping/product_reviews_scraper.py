@@ -113,20 +113,27 @@ class ProductBoxScraper(PublicServiceBase):
         return None
 
     def get_product_info(self, url_or_code: str) -> Optional[ProductInfo]:
-        """Récupère les informations du produit depuis la page"""
-        code = self.extract_product_code(url_or_code)
-        if not code:
-            # Essayer de scraper directement l'URL
-            if 'wonderbox.fr' in url_or_code:
-                return self._scrape_product_info_from_url(url_or_code)
-            return None
+        """
+        Récupère les informations du produit depuis la page.
 
-        # Construire l'URL et scraper
-        url = f"{self.SITE_URL}/b/{code}"
+        Args:
+            url_or_code: URL complète ou code produit
+
+        Returns:
+            ProductInfo avec code, prix, thème, etc.
+        """
+        # Si c'est une URL, l'utiliser directement pour scraper
+        if 'wonderbox.fr' in url_or_code:
+            return self._scrape_product_info_from_url(url_or_code)
+
+        # Sinon c'est un code, construire l'URL
+        url = f"{self.SITE_URL}/b/{url_or_code}"
         return self._scrape_product_info_from_url(url)
 
     def _scrape_product_info_from_url(self, url: str) -> Optional[ProductInfo]:
         """Scrape les infos produit depuis l'URL"""
+        self._log_separator(f"PRODUCT INFO FROM {url}")
+
         html_content = self._fetch_html(url)
         if not html_content:
             return None
@@ -134,7 +141,7 @@ class ProductBoxScraper(PublicServiceBase):
         soup = BeautifulSoup(html_content, 'html.parser')
         info = ProductInfo()
 
-        # Extraction depuis addToCart button
+        # Méthode 1: Extraction depuis addToCart button (source principale)
         add_to_cart = soup.find('button', {'id': 'addToCartButton'})
         if add_to_cart:
             data_config = add_to_cart.get('data-config', '')
@@ -145,8 +152,8 @@ class ProductBoxScraper(PublicServiceBase):
                     products = config.get('ecommerce', {}).get('add', {}).get('products', [])
                     if products:
                         p = products[0]
-                        info.code = p.get('id', '')
-                        info.name = p.get('name', '')
+                        info.code = p.get('id', '').upper()
+                        info.name = p.get('name', '').replace('_', ' ').title()
                         info.brand = p.get('brand', '')
                         info.theme = p.get('theme', '')
                         info.subtheme = p.get('subtheme', '')
@@ -159,20 +166,43 @@ class ProductBoxScraper(PublicServiceBase):
                             'dimension11': p.get('dimension11', ''),
                             'dimension12': p.get('dimension12', ''),
                             'dimension13': p.get('dimension13', ''),
+                            'dimension14': p.get('dimension14', ''),
+                            'dimension15': p.get('dimension15', ''),
+                            'dimension39': p.get('dimension39', ''),
                             'dimension40': p.get('dimension40', ''),
                             'dimension41': p.get('dimension41', ''),
+                            'dimension42': p.get('dimension42', ''),
+                            'dimension43': p.get('dimension43', ''),
                             'dimension44': p.get('dimension44', ''),
                             'dimension45': p.get('dimension45', ''),
                             'dimension46': p.get('dimension46', ''),
                         }
                         info.raw_data = p
+                        logger.debug(f"Product info extrait via addToCart: {info.code}")
                 except (json.JSONDecodeError, KeyError, TypeError) as e:
                     logger.debug(f"Erreur parsing product info: {e}")
 
+        # Méthode 2: Fallback via input productCodePost
+        if not info.code:
+            product_code_input = soup.find('input', {'name': 'productCodePost'})
+            if product_code_input:
+                info.code = product_code_input.get('value', '').strip().upper()
+                logger.debug(f"Code extrait via productCodePost: {info.code}")
+
         # Extraction du slug depuis l'URL
-        match = re.search(r'wonderbox\.fr/([^/]+)/b/', url)
+        match = re.search(r'wonderbox\.fr/([^/]+)(?:/b/|$)', url)
         if match:
-            info.slug = match.group(1)
+            slug = match.group(1)
+            if slug not in ['b', 'p', 'a', 'l']:  # Exclure les préfixes de routes
+                info.slug = slug
+
+        # Extraction du nom depuis le titre de la page si non trouvé
+        if not info.name:
+            title = soup.find('title')
+            if title:
+                # Format typique: "Nom du produit | Wonderbox"
+                title_text = title.get_text(strip=True)
+                info.name = title_text.split('|')[0].strip()
 
         return info if info.code else None
 

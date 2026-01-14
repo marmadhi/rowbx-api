@@ -95,15 +95,29 @@ def main():
                         box_scraper = ProductBoxScraper()
                         product_scraper = PublicProductScraper()
 
-                        # Extraction du code depuis URL ou HTML
-                        status_text.text("Extraction du code produit...")
-                        product_code = box_scraper.extract_product_code(url_input)
+                        # Extraction des infos produit depuis la page
+                        status_text.text("Extraction des informations produit...")
+                        product_info = box_scraper.get_product_info(url_input)
 
-                        if not product_code:
-                            st.error("Impossible d'extraire le code produit")
+                        if not product_info or not product_info.code:
+                            st.error("Impossible d'extraire les informations produit")
                         else:
-                            st.info(f"Code produit extrait: **{product_code}**")
-                            all_results = {"activities": [], "reviews": [], "stats": None}
+                            product_code = product_info.code
+                            st.info(f"Code produit: **{product_code}**")
+
+                            # Afficher les infos produit de base
+                            st.subheader("Informations Produit")
+                            col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+                            col_p1.metric("Code", product_info.code)
+                            col_p2.metric("Prix", f"{product_info.price} €" if product_info.price else "N/A")
+                            col_p3.metric("Thème", product_info.theme or "N/A")
+                            col_p4.metric("Type", product_info.product_type or "N/A")
+
+                            # Afficher détails supplémentaires
+                            with st.expander("Détails complets du produit", expanded=False):
+                                st.json(asdict(product_info))
+
+                            all_results = {"product_info": asdict(product_info), "activities": [], "reviews": [], "stats": None}
 
                             # 1. Scrape activités (via PublicProductScraper existant)
                             if box_options.get("scrape_activities", True):
@@ -175,7 +189,9 @@ def main():
                             elif all_results["reviews"]:
                                 results = all_results["reviews"]
                             else:
-                                results = []
+                                # Si aucune option cochée, afficher au moins les infos produit
+                                results = [all_results["product_info"]]
+                                st.success("Informations produit extraites")
                         
                     elif frontend_mode == "Page Partenaire":
                         scraper = PublicProviderScraper()
