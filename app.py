@@ -494,21 +494,72 @@ def main():
     # ========================================================================
     with tabs[2]:
         st.header("Trustpilot Scraping")
-        domain = st.text_input("Domaine Trustpilot (ex: wonderbox.fr, amazon.fr)", value="wonderbox.fr")
-        pages = st.number_input("Nombre de pages", 1, 100, 5)
-        
+
+        # Paramètres de base
+        col_tp1, col_tp2 = st.columns(2)
+        domain = col_tp1.text_input("Domaine Trustpilot", value="www.wonderbox.fr",
+            placeholder="ex: www.wonderbox.fr, www.amazon.fr")
+        pages = col_tp2.number_input("Nombre de pages", 1, 100, 5)
+
+        # Options de filtrage
+        st.markdown("---")
+        st.subheader("Filtres de recherche")
+
+        col_f1, col_f2 = st.columns(2)
+
+        with col_f1:
+            search_keyword = st.text_input("Mot-clé de recherche", placeholder="ex: massage, spa, cadeau",
+                help="Recherche dans le contenu des avis")
+
+        with col_f2:
+            stars_filter = st.multiselect(
+                "Filtrer par étoiles",
+                options=[5, 4, 3, 2, 1],
+                default=[],
+                format_func=lambda x: f"{x} {'etoile' if x == 1 else 'etoiles'}",
+                help="Sélectionnez une ou plusieurs notes"
+            )
+
         if st.button("Scraper Trustpilot"):
             scraper = TrustpilotScraper()
-            with st.spinner(f"Scraping {domain}..."):
-                reviews = scraper.get_reviews(domain, pages=pages)
-                
+
+            # Construction du message de statut
+            filter_msg = []
+            if search_keyword:
+                filter_msg.append(f"mot-clé='{search_keyword}'")
+            if stars_filter:
+                filter_msg.append(f"etoiles={stars_filter}")
+            filter_text = f" ({', '.join(filter_msg)})" if filter_msg else ""
+
+            with st.spinner(f"Scraping {domain}{filter_text}..."):
+                reviews, business_info = scraper.get_reviews(
+                    domain,
+                    pages=pages,
+                    stars=stars_filter if stars_filter else None,
+                    search=search_keyword if search_keyword else None
+                )
+
             results = [asdict(r) for r in reviews]
             st.success(f"{len(results)} avis récupérés")
-            
+
+            # Afficher les infos business si disponibles
+            if business_info:
+                col_bi1, col_bi2, col_bi3 = st.columns(3)
+                col_bi1.metric("Note globale", f"{business_info.get('trustScore', 0)}/5")
+                col_bi2.metric("Total avis", f"{business_info.get('numberOfReviews', 0):,}")
+                col_bi3.metric("Etoiles", f"{business_info.get('stars', 0)}/5")
+
             if results:
                 df = pd.DataFrame(results)
                 st.dataframe(df)
-                display_download_buttons(results, f"trustpilot_{domain}")
+
+                # Nom de fichier avec filtres
+                filename_parts = [f"trustpilot_{domain.replace('.', '_')}"]
+                if search_keyword:
+                    filename_parts.append(f"search_{search_keyword}")
+                if stars_filter:
+                    filename_parts.append(f"stars_{'_'.join(map(str, stars_filter))}")
+                display_download_buttons(results, "_".join(filename_parts))
 
 def extract_code_from_url(url_or_code: str) -> str:
     """Helper simple pour extraire un code d'une URL ou retourner le code"""
