@@ -3,3 +3,4 @@ from .product_scraper import PublicProductScraper
 from .provider_scraper import PublicProviderScraper
 from .activity_scraper import PublicActivityScraper
 from .reviews_scraper import PublicReviewsScraper
+from .product_reviews_scraper import ProductBoxScraper

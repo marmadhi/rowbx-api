@@ -493,5 +493,77 @@ class TrustpilotReview:
     url: str = ""
     likes: int = 0
 
+# ============================================================================
+# PRODUIT - AVIS ET DETAILS ENRICHIS
+# ============================================================================
+
+@dataclass
+class ProductReview:
+    """Avis client d'un produit (Box)"""
+    id: str = ""
+    title: str = ""
+    comment: str = ""
+    rating: int = 0
+    username: str = ""
+    date: str = ""
+    experience_date: str = ""
+    activity_code: str = ""
+    activity_name: str = ""
+    activity_url: str = ""
+    helpful_count: int = 0
 
 
+@dataclass
+class ProductReviewStats:
+    """Statistiques des avis d'un produit"""
+    total_reviews: int = 0
+    average_rating: float = 0.0
+    rating_distribution: Dict[int, int] = field(default_factory=dict)
+    rating_percentages: Dict[int, int] = field(default_factory=dict)
+
+
+@dataclass
+class ActivityQuickView:
+    """Details enrichis d'une activite via quickActivityView"""
+    id: str = ""
+    name: str = ""
+    theme: str = ""
+    subtheme: str = ""
+    price: Optional[float] = None
+    price_discount: Optional[float] = None
+    sales_type: str = ""
+    rating: Optional[float] = None
+    review_count: int = 0
+    description: str = ""
+    program: List[str] = field(default_factory=list)
+    participants: str = ""
+    location: str = ""
+    address: str = ""
+    nearby: str = ""
+    practical_info: List[str] = field(default_factory=list)
+    additional_info: List[str] = field(default_factory=list)
+    images: List[str] = field(default_factory=list)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    is_favorite: bool = False
+    partner_code: str = ""
+    partner_url: str = ""
+    box_code: str = ""
+    raw_data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ProductInfo:
+    """Informations extraites de la page produit"""
+    code: str = ""
+    name: str = ""
+    slug: str = ""
+    brand: str = ""
+    theme: str = ""
+    subtheme: str = ""
+    price: Optional[float] = None
+    price_discount: Optional[float] = None
+    category: str = ""
+    product_type: str = ""
+    dimensions: Dict[str, str] = field(default_factory=dict)
+    raw_data: Dict[str, Any] = field(default_factory=dict)

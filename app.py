@@ -16,6 +16,7 @@ from services.frontend_scraping.product_scraper import PublicProductScraper
 from services.frontend_scraping.provider_scraper import PublicProviderScraper
 from services.frontend_scraping.activity_scraper import PublicActivityScraper
 from services.frontend_scraping.reviews_scraper import PublicReviewsScraper
+from services.frontend_scraping.product_reviews_scraper import ProductBoxScraper
 # Trustpilot import
 from services.trustpilot_scraping.trustpilot_scraper import TrustpilotScraper
 
@@ -39,8 +40,34 @@ def main():
             "Type de page à scraper",
             ["Catégorie", "Page Produit (Box)", "Page Partenaire", "Page Activité", "Avis Partenaire"]
         )
-        
+
         url_input = st.text_input("URL de la page (ou Code)", placeholder="https://www.wonderbox.fr/... ou Code")
+
+        # Options avancées pour Page Produit (Box)
+        box_options = {}
+        if frontend_mode == "Page Produit (Box)":
+            st.markdown("---")
+            st.subheader("Options avancées")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                box_options["scrape_activities"] = st.checkbox("Scraper les activités", value=True)
+                box_options["enrich_activities"] = st.checkbox("Enrichir activités (quickView)", value=False,
+                    help="Récupère les détails complets via quickActivityView")
+
+            with col2:
+                box_options["scrape_reviews"] = st.checkbox("Scraper les avis", value=False)
+                box_options["reviews_max_pages"] = st.number_input("Max pages avis", min_value=1, max_value=50, value=5)
+
+            with col3:
+                box_options["filter_rating"] = st.selectbox(
+                    "Filtrer par note",
+                    options=[None, 5, 4, 3, 2, 1],
+                    format_func=lambda x: "Toutes les notes" if x is None else f"{x} étoile{'s' if x > 1 else ''}"
+                )
+                box_options["scrape_all_ratings"] = st.checkbox("Scraper toutes notes séparément", value=False,
+                    help="Récupère les avis pour chaque note (1-5) séparément")
         
         if st.button("Lancer le scraping Frontend"):
             if not url_input:
@@ -64,11 +91,91 @@ def main():
                         st.success(f"{len(results)} produits trouvés")
                         
                     elif frontend_mode == "Page Produit (Box)":
-                        scraper = PublicProductScraper()
-                        status_text.text("Scraping activités du produit...")
-                        activities = scraper.get_product_all_activities(code, max_pages=5)
-                        results = [asdict(a) for a in activities]
-                        st.success(f"{len(results)} activités trouvées")
+                        # Scrapers spécialisés
+                        box_scraper = ProductBoxScraper()
+                        product_scraper = PublicProductScraper()
+
+                        # Extraction du code depuis URL ou HTML
+                        status_text.text("Extraction du code produit...")
+                        product_code = box_scraper.extract_product_code(url_input)
+
+                        if not product_code:
+                            st.error("Impossible d'extraire le code produit")
+                        else:
+                            st.info(f"Code produit extrait: **{product_code}**")
+                            all_results = {"activities": [], "reviews": [], "stats": None}
+
+                            # 1. Scrape activités (via PublicProductScraper existant)
+                            if box_options.get("scrape_activities", True):
+                                status_text.text("Scraping activités...")
+                                activities = product_scraper.get_product_all_activities(product_code, max_pages=5)
+
+                                # Enrichissement optionnel via quickActivityView
+                                if box_options.get("enrich_activities") and activities:
+                                    status_text.text(f"Enrichissement de {len(activities)} activités...")
+                                    enriched = []
+                                    for i, act in enumerate(activities):
+                                        progress_bar.progress((i + 1) / len(activities))
+                                        detail = box_scraper.get_activity_details(
+                                            activity_id=act.id,
+                                            box_code=product_code,
+                                            product_slug=""
+                                        )
+                                        if detail:
+                                            enriched.append(asdict(detail))
+                                        else:
+                                            enriched.append(asdict(act))
+                                    all_results["activities"] = enriched
+                                else:
+                                    all_results["activities"] = [asdict(a) for a in activities]
+
+                                st.success(f"{len(all_results['activities'])} activités trouvées")
+
+                            # 2. Scrape avis (via ProductBoxScraper)
+                            if box_options.get("scrape_reviews"):
+                                max_pages = box_options.get("reviews_max_pages", 5)
+
+                                if box_options.get("scrape_all_ratings"):
+                                    # Scrape toutes les notes séparément
+                                    status_text.text("Scraping avis par note (1-5)...")
+                                    reviews_by_rating, stats = box_scraper.get_all_reviews_by_rating(
+                                        product_code, max_pages_per_rating=max_pages
+                                    )
+                                    for rating, rev_list in reviews_by_rating.items():
+                                        all_results["reviews"].extend([asdict(r) for r in rev_list])
+                                    all_results["stats"] = asdict(stats) if stats else None
+                                else:
+                                    # Scrape avec filtre optionnel
+                                    rating_filter = box_options.get("filter_rating")
+                                    filter_text = f" (note={rating_filter})" if rating_filter else ""
+                                    status_text.text(f"Scraping avis{filter_text}...")
+                                    reviews, stats = box_scraper.get_product_reviews(
+                                        product_code, rating=rating_filter, max_pages=max_pages
+                                    )
+                                    all_results["reviews"] = [asdict(r) for r in reviews]
+                                    all_results["stats"] = asdict(stats) if stats else None
+
+                                st.success(f"{len(all_results['reviews'])} avis récupérés")
+
+                                # Afficher stats
+                                if all_results["stats"]:
+                                    stats_data = all_results["stats"]
+                                    col_s1, col_s2 = st.columns(2)
+                                    col_s1.metric("Note moyenne", f"{stats_data.get('average_rating', 0):.1f}/5")
+                                    col_s2.metric("Total avis", stats_data.get("total_reviews", 0))
+
+                                    # Distribution des notes
+                                    dist = stats_data.get("rating_distribution", {})
+                                    if dist:
+                                        st.bar_chart(dist)
+
+                            # Combiner résultats pour affichage
+                            if all_results["activities"]:
+                                results = all_results["activities"]
+                            elif all_results["reviews"]:
+                                results = all_results["reviews"]
+                            else:
+                                results = []
                         
                     elif frontend_mode == "Page Partenaire":
                         scraper = PublicProviderScraper()
